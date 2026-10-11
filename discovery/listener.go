@@ -16,6 +16,7 @@ import (
 	"github.com/helix-bedrock/nethernet/internal/rnd"
 
 	"github.com/helix-bedrock/nethernet"
+	"github.com/helix-bedrock/nethernet/internal/hook"
 )
 
 // ListenConfig holds settings for a discovery Listener.
@@ -94,6 +95,9 @@ const DefaultPort = 7551
 // and allows both discovering servers on the network using broadcast or announcing servers
 // to the clients in the network.
 type Listener struct {
+	// hooks are the listener's hooks; see hooks.go.
+	hooks discoveryHooks
+
 	conn net.PacketConn
 
 	// conf is the ListenConfig used for [ListenConfig.Listen].
@@ -231,6 +235,15 @@ const maxUDPPacketSize = 65535
 
 // write writes the packet to the destination address using the network ID of Listener.
 func (l *Listener) write(pk Packet, addr net.Addr) error {
+	if hooks := l.hooks.out.Get(); hooks != nil {
+		e := &PacketEvent{Addr: addr, SenderID: l.conf.NetworkID, Packet: pk}
+		if hook.Run(l.conf.Log, e, hooks) == Drop {
+			return nil
+		}
+		if pk = e.Packet; pk == nil {
+			return nil
+		}
+	}
 	b := Marshal(pk, l.conf.NetworkID)
 	_, err := l.conn.WriteTo(b, addr)
 	return err
@@ -246,6 +259,15 @@ func (l *Listener) handlePacket(data []byte, addr net.Addr) error {
 
 	if senderID == l.conf.NetworkID {
 		return nil
+	}
+	if hooks := l.hooks.in.Get(); hooks != nil {
+		e := &PacketEvent{Addr: addr, SenderID: senderID, Packet: pk, Raw: data}
+		if hook.Run(l.conf.Log, e, hooks) == Drop {
+			return nil
+		}
+		if pk = e.Packet; pk == nil {
+			return nil
+		}
 	}
 
 	l.addressesMu.Lock()

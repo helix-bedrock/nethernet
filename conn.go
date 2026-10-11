@@ -68,6 +68,11 @@ type Conn struct {
 	// negotiator is either Listener or Dialer that the Conn has been negotiated through.
 	negotiator negotiator
 
+	// hooks are this connection's own hooks, and listener is the listener
+	// that accepted it (nil for dialed connections); see hooks.go.
+	hooks    connHooks
+	listener *Listener
+
 	// channels contains *dataChannel used for sending messages in multiple MessageReliability.
 	//
 	// There is currently two data channels labeled 'ReliableDataChannel' and 'UnreliableDataChannel'
@@ -186,6 +191,19 @@ func (conn *Conn) Write(b []byte) (n int, err error) {
 // If the data exceeds 10,000 bytes, it is split into multiple segments. An error may be
 // returned while writing one or more segments or the Conn has been closed by [Conn.Close].
 func (conn *Conn) Send(data []byte, reliability MessageReliability) (n int, err error) {
+	out, keep := conn.runPacket(false, reliability, data)
+	if !keep {
+		// Dropped by a hook: report it as sent so callers do not retry.
+		return len(data), nil
+	}
+	if _, err := conn.send(out, reliability); err != nil {
+		return 0, err
+	}
+	return len(data), nil
+}
+
+// send writes data once packet-out hooks have run.
+func (conn *Conn) send(data []byte, reliability MessageReliability) (n int, err error) {
 	select {
 	case <-conn.ctx.Done():
 		return 0, closedWriteError(context.Cause(conn.ctx))
@@ -220,7 +238,13 @@ func (conn *Conn) Send(data []byte, reliability MessageReliability) (n int, err 
 		remaining := totalSegments - 1
 		for i := 0; i < len(data); i += segmentSize {
 			frag := data[i:min(len(data), i+segmentSize)]
-			if err := d.Send(append([]byte{uint8(remaining)}, frag...)); err != nil {
+			segment, keep := conn.runMessage(false, reliability, append([]byte{uint8(remaining)}, frag...))
+			if !keep {
+				n += len(frag)
+				remaining--
+				continue
+			}
+			if err := d.Send(segment); err != nil {
 				return n, fmt.Errorf("write segment #%d: %w", totalSegments-1-remaining, closedWriteError(err))
 			}
 			n += len(frag)
@@ -316,6 +340,7 @@ func (conn *Conn) close(cause error) (err error) {
 		}
 		conn.cancel(cause)
 		conn.negotiator.handleClose(conn)
+		conn.runDisconnect()
 
 		for _, ch := range conn.snapshotChannels() {
 			if ch != nil {
@@ -378,12 +403,14 @@ func isTerminalICEState(state webrtc.ICETransportState) bool {
 // error has occurred in any of the underlying transports and data channels.
 func (conn *Conn) handleTransports() {
 	conn.ice.OnConnectionStateChange(func(state webrtc.ICETransportState) {
+		conn.runState("ice", state.String())
 		if isTerminalICEState(state) {
 			// This handler function itself is invoked while holding an internal lock, so call close in a goroutine to avoid deadlock.
 			go func(err error) { _ = conn.close(err) }(fmt.Errorf("nethernet: ICE transport entered unrecoverable state: %s", state))
 		}
 	})
 	conn.dtls.OnStateChange(func(state webrtc.DTLSTransportState) {
+		conn.runState("dtls", state.String())
 		switch state {
 		case webrtc.DTLSTransportStateClosed, webrtc.DTLSTransportStateFailed:
 			// This handler function itself is invoked while holding an internal lock, so call close in a goroutine to avoid deadlock.
@@ -392,6 +419,7 @@ func (conn *Conn) handleTransports() {
 		}
 	})
 	conn.sctp.OnClose(func(err error) {
+		conn.runState("sctp", "closed")
 		var e error
 		if err != nil {
 			e = fmt.Errorf("nethernet: SCTP transport closed: %w", err)
@@ -666,7 +694,7 @@ func (conn *Conn) trickleCandidate(signaling Signaling, data string) {
 	// connection is closed.
 	ctx, cancel := context.WithTimeout(conn.Context(), time.Second*15)
 	defer cancel()
-	if err := signaling.Signal(ctx, &Signal{
+	if err := sendSignal(ctx, conn.listener, signaling, &Signal{
 		Type:         SignalTypeCandidate,
 		ConnectionID: conn.id,
 		Data:         data,
@@ -676,7 +704,7 @@ func (conn *Conn) trickleCandidate(signaling Signaling, data string) {
 		defer cancel()
 
 		// I don't think the error code will be signaled back to the remote connection, but just in case.
-		if err := signaling.Signal(errCtx, &Signal{
+		if err := sendSignal(errCtx, conn.listener, signaling, &Signal{
 			Type:         SignalTypeError,
 			ConnectionID: conn.id,
 			Data:         strconv.Itoa(ErrorCodeSignalingFailedToSend),
