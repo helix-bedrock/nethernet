@@ -1,37 +1,41 @@
-<!-- TEMPLATE: replace everything in <angle brackets>, then delete this line. -->
+# nethernet
 
-# <repo-name>
+NetherNet for Minecraft: Bedrock Edition: the WebRTC-based transport newer Bedrock
+clients use for friends lists, LAN games and Xbox Live joins, with full low-level
+access for servers.
 
-<One sentence: what this is and who it's for.>
-
-**Status:** <experimental | in development | stable>
+**Status:** in development. The API will change as low-level hooks are added.
 
 Part of [Helix](https://github.com/helix-bedrock), an open-source Minecraft: Bedrock
-Edition server engine in Go.
+Edition server engine in Go. Helix maintains this library.
+
+## Origin
+
+This library started as a copy of [go-nethernet](https://github.com/df-mc/go-nethernet)
+by **Dragonfly Tech** (the df-mc team, MIT). Thank you to them for the original work.
+Helix maintains and changes it from here on.
+
+It uses [Pion WebRTC](https://github.com/pion/webrtc) for the WebRTC layer.
+
+## Packages
+
+| Package | What it does |
+|---|---|
+| `nethernet` | Listener, dialer and connections over WebRTC data channels |
+| `nethernet/discovery` | LAN discovery: broadcasting and finding servers on the local network |
+| `nethernet/endpoint` | Signaling through Xbox Live / Minecraft services |
 
 ## Install
 
 ```bash
-go get github.com/helix-bedrock/<repo-name>
+go get github.com/helix-bedrock/nethernet
 ```
-
-## Example
-
-```go
-// <Smallest useful example.>
-```
-
-## Documentation
-
-API docs: <https://pkg.go.dev/github.com/helix-bedrock/<repo-name>>
 
 ## Contributing
 
 See the [contributing guide](https://github.com/helix-bedrock/.github/blob/main/CONTRIBUTING.md).
-AI-assisted contributions follow the
-[AI policy](https://github.com/helix-bedrock/.github/blob/main/AI_POLICY.md).
 
 ## License
 
-<MIT | GPL-3.0>. See [`LICENSE`](LICENSE). Ported code and its sources are listed
-in [`CREDITS.md`](CREDITS.md).
+MIT. See [`LICENSE`](LICENSE). The original copyright notice from go-nethernet is kept,
+as the MIT license requires. Sources are listed in [`CREDITS.md`](CREDITS.md).
