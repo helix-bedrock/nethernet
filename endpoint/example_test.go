@@ -21,7 +21,7 @@ func ExampleClient() {
 	if err != nil {
 		panic(fmt.Sprintf("error connecting to server: %s", err))
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	fmt.Printf("connected, latency: %s", conn.Latency())
 }
@@ -33,7 +33,7 @@ func ExampleHandler() {
 	if err != nil {
 		panic(fmt.Sprintf("error listening on HTTP: %s", err))
 	}
-	defer handler.Close()
+	defer func() { _ = handler.Close() }()
 
 	// Set up a NetherNet listener.
 	var cfg nethernet.ListenConfig
@@ -41,7 +41,7 @@ func ExampleHandler() {
 	if err != nil {
 		panic(fmt.Sprintf("error listening on NetherNet: %s", err))
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	// Start accepting NetherNet connections.
 	for {

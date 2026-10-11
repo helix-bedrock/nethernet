@@ -7,12 +7,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/helix-bedrock/nethernet/internal/rnd"
 
 	"github.com/helix-bedrock/nethernet"
 )
@@ -49,7 +50,7 @@ func (conf ClientConfig) New() *Client {
 		conf.Logger = slog.Default()
 	}
 	if conf.NetworkID == "" {
-		conf.NetworkID = strconv.FormatUint(rand.Uint64(), 10)
+		conf.NetworkID = strconv.FormatUint(rnd.Uint64(), 10)
 	}
 	return &Client{
 		conf: conf,
@@ -106,7 +107,7 @@ func (c *Client) Status(ctx context.Context, address string) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	switch resp.StatusCode {
 	case http.StatusOK:
 		var status Status
@@ -156,7 +157,7 @@ func (c *Client) Signal(ctx context.Context, signal *nethernet.Signal) error {
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
@@ -205,7 +206,8 @@ func (c *Client) DisableTrickleICE() bool {
 // Notify registers n to receive incoming NetherNet signals.
 func (c *Client) Notify(n nethernet.Notifier) (stop func()) {
 	if n == nil {
-		panic("nethernet/endpoint: Client.Notify: nil Notifier")
+		// Nothing to notify: register nothing instead of panicking.
+		return func() {}
 	}
 	c.notifiersMu.Lock()
 	i := c.notifyCount
@@ -243,11 +245,9 @@ func (c *Client) NetworkID() string {
 	return c.conf.NetworkID
 }
 
-// PongData is unsupported on Client because endpoint clients only dial and do
-// not receive server ping data.
-func (c *Client) PongData([]byte) {
-	panic("nethernet/endpoint: Client.PongData: unsupported")
-}
+// PongData does nothing on Client: endpoint clients only dial and never answer
+// server pings.
+func (c *Client) PongData([]byte) {}
 
 // notifySignal broadcasts a signal to Dialers registered to this Client.
 func (c *Client) notifySignal(signal *nethernet.Signal) {

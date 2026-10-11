@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"math/rand/v2"
 	"net"
 	"net/netip"
 	"slices"
@@ -18,6 +17,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/helix-bedrock/nethernet/internal/rnd"
 
 	"github.com/pion/ice/v4"
 	"github.com/pion/sdp/v3"
@@ -379,14 +380,14 @@ func (conn *Conn) handleTransports() {
 	conn.ice.OnConnectionStateChange(func(state webrtc.ICETransportState) {
 		if isTerminalICEState(state) {
 			// This handler function itself is invoked while holding an internal lock, so call close in a goroutine to avoid deadlock.
-			go conn.close(fmt.Errorf("nethernet: ICE transport entered unrecoverable state: %s", state))
+			go func(err error) { _ = conn.close(err) }(fmt.Errorf("nethernet: ICE transport entered unrecoverable state: %s", state))
 		}
 	})
 	conn.dtls.OnStateChange(func(state webrtc.DTLSTransportState) {
 		switch state {
 		case webrtc.DTLSTransportStateClosed, webrtc.DTLSTransportStateFailed:
 			// This handler function itself is invoked while holding an internal lock, so call close in a goroutine to avoid deadlock.
-			go conn.close(fmt.Errorf("nethernet: DTLS transport entered unrecoverable state: %s", state))
+			go func(err error) { _ = conn.close(err) }(fmt.Errorf("nethernet: DTLS transport entered unrecoverable state: %s", state))
 		default:
 		}
 	})
@@ -398,7 +399,7 @@ func (conn *Conn) handleTransports() {
 			e = errors.New("nethernet: SCTP transport closed")
 		}
 		// This handler function itself is invoked while holding an internal lock, so call close in a goroutine to avoid deadlock.
-		go conn.close(e)
+		go func(err error) { _ = conn.close(err) }(e)
 	})
 }
 
@@ -432,7 +433,7 @@ func (conn *Conn) handleSignal(signal *Signal) error {
 		}
 		cause := fmt.Errorf("nethernet: remote peer notified connection failure (code: %d)", code)
 		conn.cancel(cause)
-		go conn.close(cause)
+		go func(err error) { _ = conn.close(err) }(cause)
 	default:
 		return fmt.Errorf("unknown signal type: %s", signal.Type)
 	}
@@ -765,7 +766,7 @@ func (desc description) encode() ([]byte, error) {
 		Version: 0x0,
 		Origin: sdp.Origin{
 			Username:       "-",
-			SessionID:      rand.Uint64(),
+			SessionID:      rnd.Uint64(),
 			SessionVersion: 0x2,
 			NetworkType:    "IN",
 			AddressType:    "IP4",
@@ -935,4 +936,5 @@ type negotiator interface {
 	log() *slog.Logger
 }
 
+// ErrUnsupported is returned by methods a NetherNet Conn does not support.
 var ErrUnsupported = errors.New("nethernet: unsupported")

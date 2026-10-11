@@ -47,7 +47,8 @@ func (r MessageReliability) Parameters() *webrtc.DataChannelParameters {
 			MaxRetransmits: &param,
 		}
 	default:
-		panic(fmt.Sprintf("nethernet: MessageReliability.Parameters: unknown value: %d", r))
+		// Unknown reliability: callers must check for nil.
+		return nil
 	}
 }
 
@@ -56,6 +57,9 @@ func (r MessageReliability) Parameters() *webrtc.DataChannelParameters {
 // it will return false.
 func (r MessageReliability) Valid(channel *webrtc.DataChannel) bool {
 	params := r.Parameters()
+	if params == nil || channel == nil {
+		return false
+	}
 	// Compare non-pointer values
 	if channel.Label() != params.Label ||
 		channel.Protocol() != params.Protocol ||
@@ -105,12 +109,12 @@ func wrapDataChannel(channel *webrtc.DataChannel, reliability MessageReliability
 			// helps mitigate malformed or malicious input from a peer.
 			// The DataChannel invokes this callback while holding an internal lock,
 			// so the connection is closed in a goroutine to avoid deadlock.
-			go conn.close(fmt.Errorf("nethernet: handle message in %s: %w", ch.Label(), err))
+			go func(err error) { _ = conn.close(err) }(fmt.Errorf("nethernet: handle message in %s: %w", ch.Label(), err))
 		}
 	})
 	ch.OnClose(func() {
 		// This handler function itself is invoked while holding an internal lock, so call close in a goroutine to avoid deadlock.
-		go conn.close(fmt.Errorf("nethernet: data channel %q closed by remote peer", ch.Label()))
+		go func(err error) { _ = conn.close(err) }(fmt.Errorf("nethernet: data channel %q closed by remote peer", ch.Label()))
 	})
 	return ch
 }

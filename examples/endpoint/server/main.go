@@ -1,3 +1,5 @@
+// Command server accepts NetherNet connections using the HTTP endpoint as the
+// signaling method, and logs each one.
 package main
 
 import (
@@ -10,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"time"
 
 	"github.com/helix-bedrock/nethernet"
 	"github.com/helix-bedrock/nethernet/endpoint"
@@ -18,21 +21,21 @@ import (
 // debug indicates whether to show debug log in the output.
 var debug = flag.Bool("debug", true, "Show debug log")
 
-// init parses the flags given by the user in the command line.
-func init() {
-	flag.Parse()
-
+func main() {
 	flag.Usage = func() {
 		_, _ = fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s <address:port> [cert.pem] [key.pem]\n", os.Args[0])
 		flag.PrintDefaults()
 	}
+	flag.Parse()
 	if *debug {
 		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	}
+	if err := run(); err != nil {
+		slog.Error(err.Error())
+	}
 }
 
-// main is a program demonstrates a server connecting to a client.
-func main() {
+func run() error {
 	var (
 		address  = flag.Arg(0)
 		certFile = flag.Arg(1)
@@ -40,13 +43,11 @@ func main() {
 	)
 	if address == "" {
 		flag.Usage()
-		os.Exit(1)
+		return errors.New("missing address")
 	}
-
 	if (certFile != "") != (keyFile != "") {
 		flag.Usage()
-		slog.Error("either certificate or key file is missing")
-		os.Exit(1)
+		return errors.New("either certificate or key file is missing")
 	}
 
 	server := endpoint.NewHandler()
@@ -57,19 +58,19 @@ func main() {
 		DisableTrickleICE: true,
 	}.Listen(server)
 	if err != nil {
-		panic(fmt.Sprintf("error listening on NetherNet: %s", err))
+		return fmt.Errorf("listen on NetherNet: %w", err)
 	}
 	defer slog.Info("server closed")
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	tcp, err := net.Listen("tcp", address)
 	if err != nil {
-		panic(fmt.Sprintf("error listening on TCP: %s", err))
+		return fmt.Errorf("listen on TCP: %w", err)
 	}
-	defer tcp.Close()
+	defer func() { _ = tcp.Close() }()
 
 	enableTLS := certFile != "" && keyFile != ""
-	srv := &http.Server{Addr: address, Handler: server}
+	srv := &http.Server{Addr: address, Handler: server, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		var err error
 		if enableTLS {
@@ -78,17 +79,17 @@ func main() {
 			err = srv.Serve(tcp)
 		}
 		if err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, http.ErrServerClosed) {
-			panic(fmt.Sprintf("error accepting on HTTP: %s", err))
+			slog.Error("accept on HTTP: " + err.Error())
 		}
 	}()
-	defer srv.Close()
+	defer func() { _ = srv.Close() }()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Kill, os.Interrupt)
 	defer cancel()
 	go func() {
 		<-ctx.Done()
 		if err := l.Close(); err != nil {
-			panic(fmt.Sprintf("error closing NetherNet listener: %s", err))
+			slog.Error("close NetherNet listener: " + err.Error())
 		}
 	}()
 
@@ -97,12 +98,16 @@ func main() {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			return
+			return nil
+		}
+		nc, ok := conn.(*nethernet.Conn)
+		if !ok {
+			continue
 		}
 		slog.Info("connected",
-			"remoteAddr", conn.RemoteAddr(),
-			"localAddr", conn.LocalAddr(),
-			"latency", conn.(*nethernet.Conn).Latency(),
+			"remoteAddr", nc.RemoteAddr(),
+			"localAddr", nc.LocalAddr(),
+			"latency", nc.Latency(),
 		)
 	}
 }

@@ -1,7 +1,11 @@
+// Command client connects to a NetherNet server using the HTTP endpoint as the
+// signaling method. It sends no client identity, so the server must allow
+// anonymous (offline) connections.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -13,20 +17,19 @@ import (
 	"github.com/helix-bedrock/nethernet/endpoint"
 )
 
-// init parses the flags given by the user in the command line.
-func init() {
+func main() {
 	flag.Parse()
+	if err := run(); err != nil {
+		slog.Error(err.Error())
+	}
 }
 
-// main is a program that demonstrates a client connecting to the server over NetherNet
-// using HTTP endpoint as the signaling method. This example does not configure a
-// client identity, so the server must allow anonymous/offline connections.
-func main() {
+func run() error {
 	address := flag.Arg(0)
 	if address == "" {
 		_, _ = fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s <url>\n", os.Args[0])
 		flag.PrintDefaults()
-		os.Exit(1)
+		return errors.New("missing url")
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Kill, os.Interrupt)
@@ -37,9 +40,9 @@ func main() {
 	slog.Info("establishing connection over NetherNet... send an interrupt signal (Ctrl+C) to abort", "url", address)
 	conn, err := nethernet.Dialer{DisableTrickleICE: true}.DialContext(ctx, address, client)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("dial: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	slog.Info("connected",
 		"remoteAddr", conn.RemoteAddr(),
@@ -53,4 +56,5 @@ func main() {
 	case <-conn.Context().Done():
 	case <-time.After(time.Second * 15):
 	}
+	return nil
 }
