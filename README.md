@@ -31,6 +31,41 @@ It uses [Pion WebRTC](https://github.com/pion/webrtc) for the WebRTC layer.
 go get github.com/helix-bedrock/nethernet
 ```
 
+## Hooks
+
+Hooks give full low-level access to every stage of a NetherNet connection. Add or
+remove them at any time; a hook that is not registered costs nothing (about 3 ns
+and no allocations per check). Hooks can observe, change or drop what passes
+through them (`return nethernet.Drop`), and a panicking hook is logged instead of
+crashing the server.
+
+```go
+remove := listener.OnConnectionAttempt(func(e *nethernet.AttemptEvent) nethernet.Verdict {
+    if banned(e.NetworkID) {
+        return nethernet.Drop
+    }
+    return nethernet.Allow
+})
+defer remove()
+
+conn.OnPacketIn(func(e *nethernet.PacketEvent) nethernet.Verdict {
+    log.Printf("%d bytes on %v", len(e.Data), e.Reliability)
+    return nethernet.Allow
+})
+```
+
+| Hook | Listener | Conn | Sees |
+|---|---|---|---|
+| `OnSignalIn` / `OnSignalOut` | ✓ | | Every signal: offers, answers, ICE candidates, errors |
+| `OnConnectionAttempt` | ✓ | | New offers: network ID, connection ID, SDP |
+| `OnConnect` / `OnDisconnect` | ✓ | `OnDisconnect` | Connection lifecycle |
+| `OnStateChange` | ✓ | ✓ | ICE, DTLS and SCTP state changes |
+| `OnMessageIn` / `OnMessageOut` | ✓ | ✓ | Raw data-channel messages (each segment) |
+| `OnPacketIn` / `OnPacketOut` | ✓ | ✓ | Complete packets after reassembly / before splitting |
+
+The `discovery` listener has `OnPacketIn` and `OnPacketOut` for LAN discovery
+packets, with address, sender ID, decoded packet and raw bytes.
+
 ## Contributing
 
 See the [contributing guide](https://github.com/helix-bedrock/.github/blob/main/CONTRIBUTING.md).

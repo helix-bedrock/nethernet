@@ -98,7 +98,11 @@ func wrapDataChannel(channel *webrtc.DataChannel, reliability MessageReliability
 		close:   make(chan struct{}),
 	}
 	ch.OnMessage(func(msg webrtc.DataChannelMessage) {
-		if err := ch.handleMessage(msg.Data); err != nil {
+		data, keep := conn.runMessage(true, reliability, msg.Data)
+		if !keep {
+			return
+		}
+		if err := ch.handleMessage(conn, data); err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				conn.log.Debug("message dropped due to closure of data channel",
 					slog.String("label", ch.Label()))
@@ -172,7 +176,7 @@ func parseMessage(b []byte) (*message, error) {
 // handleMessage handles a message received from a [webrtc.DataChannel] for the reliability. It parses
 // the incoming data into a message using parseMessage and handles the segments, and if all segments has
 // been received, it sends the buffer to either [Conn.Read] or [Conn.ReadPacket].
-func (c *dataChannel) handleMessage(b []byte) error {
+func (c *dataChannel) handleMessage(conn *Conn, b []byte) error {
 	select {
 	case <-c.close:
 		return net.ErrClosed
@@ -202,11 +206,18 @@ func (c *dataChannel) handleMessage(b []byte) error {
 		return nil
 	}
 
+	packet := c.data
+	c.data = nil
+	if conn != nil {
+		var keep bool
+		if packet, keep = conn.runPacket(true, c.reliability, packet); !keep {
+			return nil
+		}
+	}
 	select {
 	case <-c.close:
 		return net.ErrClosed
-	case c.packets <- c.data:
-		c.data = nil
+	case c.packets <- packet:
 	}
 
 	return nil

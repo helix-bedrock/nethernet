@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/helix-bedrock/nethernet/internal/hook"
 	"github.com/helix-bedrock/nethernet/internal/rnd"
 
 	"github.com/pion/sdp/v3"
@@ -203,6 +204,9 @@ func (conf ListenConfig) Listen(signaling Signaling) (*Listener, error) {
 
 // Listener implements a NetherNet connection listener.
 type Listener struct {
+	// hooks are the listener's hooks; see hooks.go.
+	hooks listenerHooks
+
 	conf ListenConfig
 
 	signaling Signaling
@@ -376,7 +380,7 @@ func (n *listenerNegotiator) signalError(code int) {
 	// The connection may already have closed; use the listener's lifetime.
 	ctx, cancel := context.WithTimeout(n.Listener.Context(), SignalErrorTimeout)
 	defer cancel()
-	if err := n.signaling.Signal(ctx, &Signal{
+	if err := sendSignal(ctx, n.Listener, n.signaling, &Signal{
 		Type:         SignalTypeError,
 		ConnectionID: n.key.connectionID,
 		NetworkID:    n.key.networkID,
@@ -465,6 +469,7 @@ func (n *listenerNegotiator) handleOffer(signal *Signal) error {
 	if err != nil {
 		return fmt.Errorf("create peer connection: %w", err)
 	}
+	c.listener = n.Listener
 	established := false
 	defer func() {
 		if !established {
@@ -552,7 +557,7 @@ func (n *listenerNegotiator) handleOffer(signal *Signal) error {
 		return wrapSignalError(fmt.Errorf("encode answer: %w", err), ErrorCodeFailedToCreateAnswer)
 	}
 
-	if err := n.signaling.Signal(ctx, &Signal{
+	if err := sendSignal(ctx, n.Listener, n.signaling, &Signal{
 		Type:         SignalTypeAnswer,
 		ConnectionID: signal.ConnectionID,
 		Data:         string(answer),
@@ -687,6 +692,9 @@ func (n *listenerNegotiator) finaliseConn(conn *Conn, d *description, channelsRe
 		case <-n.closed:
 			return net.ErrClosed
 		case n.incoming <- conn:
+			if hooks := n.hooks.connect.Get(); hooks != nil {
+				hook.Observe(n.conf.Log, conn, hooks)
+			}
 		}
 		return nil
 	}
@@ -828,6 +836,15 @@ func (l *Listener) NotifySignal(signal *Signal) bool {
 		l.conf.Log.Error("error validating signal", "error", err)
 		return false
 	}
+	if hooks := l.hooks.signalIn.Get(); hooks != nil {
+		if hook.Run(l.conf.Log, &SignalEvent{Signal: signal}, hooks) == Drop {
+			return false
+		}
+		if err := signal.validate(); err != nil {
+			l.conf.Log.Error("signal hook produced an invalid signal", "error", err)
+			return false
+		}
+	}
 	l.negotiationsMu.Lock()
 	select {
 	case <-l.Context().Done():
@@ -848,6 +865,13 @@ func (l *Listener) NotifySignal(signal *Signal) bool {
 				l.conf.Log.Debug("received non-offer signal for a non-existing negotiation", "signal", signal.String(), "networkID", signal.NetworkID)
 				l.negotiationsMu.Unlock()
 				return false
+			}
+			if hooks := l.hooks.attempt.Get(); hooks != nil {
+				e := &AttemptEvent{NetworkID: signal.NetworkID, ConnectionID: signal.ConnectionID, Offer: signal.Data}
+				if hook.Run(l.conf.Log, e, hooks) == Drop {
+					l.negotiationsMu.Unlock()
+					return false
+				}
 			}
 			select {
 			case l.sem <- struct{}{}:
