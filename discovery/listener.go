@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"math/rand"
 	"net"
 	"strconv"
 	"strings"
@@ -14,9 +13,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/helix-bedrock/nethernet/internal/rnd"
+
 	"github.com/helix-bedrock/nethernet"
 )
 
+// ListenConfig holds settings for a discovery Listener.
 type ListenConfig struct {
 	// NetworkID specifies the network ID for the NetherNet network being announced to the clients in the
 	// same network. In NetherNet, it is explicitly defined as a string, but in LAN discovery it is sent as an uint8.
@@ -39,7 +41,7 @@ func (conf ListenConfig) Listen(addr string) (*Listener, error) {
 		conf.Log = slog.Default()
 	}
 	if conf.NetworkID == 0 {
-		conf.NetworkID = rand.Uint64()
+		conf.NetworkID = rnd.Uint64()
 	}
 	if addr == "" {
 		addr = ":0"
@@ -160,7 +162,8 @@ func (l *Listener) Signal(ctx context.Context, signal *nethernet.Signal) error {
 // Notify registers n to receive incoming NetherNet signals.
 func (l *Listener) Notify(n nethernet.Notifier) func() {
 	if n == nil {
-		panic("nethernet/discovery: Listener.Notify: nil Notifier")
+		// Nothing to notify: register nothing instead of panicking.
+		return func() {}
 	}
 	l.notifiersMu.Lock()
 	i := l.notifyCount
@@ -262,7 +265,7 @@ func (l *Listener) handlePacket(data []byte, addr net.Addr) error {
 	case *RequestPacket:
 		err = l.handleRequest(addr)
 	case *ResponsePacket:
-		err = l.handleResponse(pk, senderID)
+		l.handleResponse(pk, senderID)
 	case *MessagePacket:
 		err = l.handleMessage(pk, senderID)
 	default:
@@ -289,12 +292,10 @@ func (l *Listener) handleRequest(addr net.Addr) error {
 
 // handleResponse handles a ResponsePacket sent from the servers.
 // It stores its ApplicationData to the responses atomically along with the sender ID.
-func (l *Listener) handleResponse(pk *ResponsePacket, senderID uint64) error {
+func (l *Listener) handleResponse(pk *ResponsePacket, senderID uint64) {
 	l.responsesMu.Lock()
 	l.responses[senderID] = pk.ApplicationData
 	l.responsesMu.Unlock()
-
-	return nil
 }
 
 // handleMessage handles a MessagePacket sent from the remote NetherNet network.
@@ -348,8 +349,9 @@ func (l *Listener) PongData(b []byte) {
 		l.conf.Log.Error("unexpected pong data format", slog.String("data", string(b)))
 		return
 	}
-	players, _ := strconv.Atoi(parts[4])
-	maxPlayers, _ := strconv.Atoi(parts[5])
+	// ParseInt with bitSize 32 rejects values that would overflow int32.
+	players, _ := strconv.ParseInt(parts[4], 10, 32)
+	maxPlayers, _ := strconv.ParseInt(parts[5], 10, 32)
 	gameType, ok := parsePongGameType(parts[8])
 	if !ok {
 		l.conf.Log.Debug("unexpected pong game type", slog.String("gametype", parts[8]))

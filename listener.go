@@ -8,13 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"net"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/helix-bedrock/nethernet/internal/rnd"
 
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v4"
@@ -178,7 +179,7 @@ func (conf ListenConfig) Listen(signaling Signaling) (*Listener, error) {
 	networkID := signaling.NetworkID()
 	id, err := strconv.ParseUint(networkID, 10, 64)
 	if err != nil {
-		id = rand.Uint64()
+		id = rnd.Uint64()
 	}
 
 	l := &Listener{
@@ -435,9 +436,13 @@ func (n *listenerNegotiator) handleOffer(signal *Signal) error {
 		var cancel context.CancelFunc
 		ctx, cancel = n.conf.NegotiationContext(parent)
 		if ctx == nil {
-			panic("nethernet: Listener: NegotiationContext returned nil")
+			// A broken NegotiationContext falls back to the default timeout
+			// instead of panicking.
+			ctx, cancel = context.WithTimeout(parent, time.Second*15)
 		}
-		defer cancel()
+		if cancel != nil {
+			defer cancel()
+		}
 	} else {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(parent, time.Second*15)
@@ -526,7 +531,7 @@ func (n *listenerNegotiator) handleOffer(signal *Signal) error {
 			if r.Valid(channel) {
 				ch := wrapDataChannel(channel, r, c)
 				if existing := c.storeChannel(r, ch); existing != nil {
-					go c.close(fmt.Errorf("data channel created for same reliability parameters: %q", r.Parameters().Label))
+					go func(err error) { _ = c.close(err) }(fmt.Errorf("data channel created for same reliability parameters: %q", r.Parameters().Label))
 					return
 				}
 				channel.OnOpen(sync.OnceFunc(func() {
@@ -538,7 +543,7 @@ func (n *listenerNegotiator) handleOffer(signal *Signal) error {
 				return
 			}
 		}
-		go c.close(fmt.Errorf("invalid data channel opened: %q", channel.Label()))
+		go func(err error) { _ = c.close(err) }(fmt.Errorf("invalid data channel opened: %q", channel.Label()))
 	})
 
 	// Encode an answer using the local parameters!
@@ -634,9 +639,13 @@ func (n *listenerNegotiator) finaliseConn(conn *Conn, d *description, channelsRe
 		var cancel context.CancelFunc
 		ctx, cancel = n.conf.ConnContext(parent, conn)
 		if ctx == nil {
-			panic("nethernet: ConnContext returned nil")
+			// A broken ConnContext falls back to the default timeout instead
+			// of panicking.
+			ctx, cancel = context.WithTimeout(parent, time.Second*5)
 		}
-		defer cancel()
+		if cancel != nil {
+			defer cancel()
+		}
 	} else {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(parent, time.Second*5)
@@ -645,8 +654,7 @@ func (n *listenerNegotiator) finaliseConn(conn *Conn, d *description, channelsRe
 
 	defer func() {
 		if err != nil {
-			switch err {
-			case context.Canceled, context.DeadlineExceeded, net.ErrClosed:
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, net.ErrClosed) {
 				if cause := context.Cause(conn.ctx); cause != nil {
 					err = cause
 				}

@@ -2,9 +2,10 @@ package endpoint
 
 import (
 	"fmt"
-	"math/rand/v2"
 	"strconv"
 	"strings"
+
+	"github.com/helix-bedrock/nethernet/internal/rnd"
 )
 
 // Status represents a server status of a NetherNet server.
@@ -56,7 +57,7 @@ func (s Status) RakNet() []byte {
 	}
 	return []byte(fmt.Sprintf("MCPE;%s;%d;%s;%d;%d;%d;%s;%s;%d;%d;%d;%d;",
 		s.ServerName, s.Protocol, s.Version, s.PlayerCount, s.MaxPlayerCount,
-		rand.Int64(), s.LevelName, gameType, s.GameType, 19132, 19132, 0,
+		int64(rnd.Uint64()), s.LevelName, gameType, s.GameType, 19132, 19132, 0,
 	))
 }
 
@@ -114,6 +115,7 @@ func parseGameType(v string) (int, bool) {
 	return 0, false
 }
 
+// Game types reported in server status.
 const (
 	GameTypeSurvival = iota
 	GameTypeCreative

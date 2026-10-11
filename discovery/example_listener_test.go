@@ -22,7 +22,7 @@ func ExampleListen() {
 	if err != nil {
 		panic(fmt.Sprintf("error listening on discovery: %s", err))
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 
 	nonce := make([]byte, 16)
 	if _, err := cryptorand.Read(nonce); err != nil {
@@ -49,7 +49,7 @@ func ExampleListen() {
 	if err != nil {
 		panic(fmt.Sprintf("error listening on NetherNet: %s", err))
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	for {
 		conn, err := l.Accept()

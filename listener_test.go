@@ -145,7 +145,7 @@ func TestListenerConnectionOwnership(t *testing.T) {
 func TestWrapSignalErrorPreservesExistingCode(t *testing.T) {
 	inner := wrapSignalError(errors.New("bad offer"), ErrorCodeFailedToSetRemoteDescription)
 	outer := fmt.Errorf("negotiate: %w", inner)
-	if got := wrapSignalError(outer, ErrorCodeFailedToCreateAnswer); got != outer {
+	if got := wrapSignalError(outer, ErrorCodeFailedToCreateAnswer); got != outer { //nolint:errorlint // checks the same error value is returned
 		t.Fatalf("wrapSignalError replaced an existing signal error: %v", got)
 	}
 }
@@ -301,7 +301,7 @@ func TestListenerProcessesConnectionsIndependently(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	offer := testOffer(t)
 	if !l.NotifySignal(&Signal{Type: SignalTypeOffer, ConnectionID: 1, NetworkID: "remote", Data: offer}) {

@@ -8,12 +8,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math/rand/v2"
 	"net"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/helix-bedrock/nethernet/internal/rnd"
 
 	"github.com/helix-bedrock/nethernet"
 )
@@ -60,7 +61,7 @@ func (conf HandlerConfig) New() *Handler {
 		}
 	}
 	if conf.NetworkID == "" {
-		conf.NetworkID = strconv.FormatUint(rand.Uint64(), 10)
+		conf.NetworkID = strconv.FormatUint(rnd.Uint64(), 10)
 	}
 
 	h := &Handler{
@@ -222,15 +223,18 @@ func (h *Handler) Signal(ctx context.Context, signal *nethernet.Signal) error {
 // Notify registers n to receive incoming HTTP endpoint offers.
 func (h *Handler) Notify(n nethernet.Notifier) (stop func()) {
 	if n == nil {
-		panic("nethernet/endpoint: Handler.Notify: nil Notifier")
+		// Nothing to notify: register nothing instead of panicking.
+		return func() {}
 	}
 	if _, ok := n.(*nethernet.Listener); !h.disableNotifyTypeCheck && !ok {
-		panic(fmt.Sprintf("nethernet/endpoint: Handler can only be used with *nethernet.Listener: %T", n))
+		h.conf.Logger.Error("nethernet/endpoint: Handler can only be used with *nethernet.Listener; notifier ignored", "type", fmt.Sprintf("%T", n))
+		return func() {}
 	}
 	h.notifierMu.Lock()
 	if h.notifier != nil {
 		h.notifierMu.Unlock()
-		panic("nethernet/endpoint: Handler.Notify: listener already registered")
+		h.conf.Logger.Error("nethernet/endpoint: Handler.Notify: a listener is already registered; notifier ignored")
+		return func() {}
 	}
 	h.notifierID++
 	id := h.notifierID
@@ -398,7 +402,7 @@ func (h *Handler) handleOffer(w http.ResponseWriter, req *http.Request) {
 			writeText(w, http.StatusBadGateway, "Timed out waiting for answer")
 			return
 		}
-		writeText(w, http.StatusInternalServerError, "An error has occured while handling this request")
+		writeText(w, http.StatusInternalServerError, "An error has occurred while handling this request")
 		return
 	}
 
@@ -447,7 +451,7 @@ func (h *Handler) negotiate(ctx context.Context, networkID, offer string) (*neth
 
 	signal := &nethernet.Signal{
 		Type:         nethernet.SignalTypeOffer,
-		ConnectionID: rand.Uint64(),
+		ConnectionID: rnd.Uint64(),
 		Data:         offer,
 		NetworkID:    networkID,
 	}

@@ -231,6 +231,7 @@ func formatICECandidate(id int, candidate webrtc.ICECandidate, iceParams webrtc.
 	return b.String()
 }
 
+// Error codes sent in NetherNet error signals.
 const (
 	ErrorCodeNone = iota
 	ErrorCodeDestinationNotLoggedIn

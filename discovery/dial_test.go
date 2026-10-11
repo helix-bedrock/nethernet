@@ -21,7 +21,7 @@ func TestDial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 
 	ticker := time.NewTicker(time.Second * 2)
 	defer ticker.Stop()
@@ -60,7 +60,7 @@ func dial(t testing.TB, networkID uint64, signaling nethernet.Signaling, serverD
 	if err != nil {
 		t.Fatalf("error connecting to %s: %s", serverData.ServerName, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	t.Logf("connected, latency: %s", conn.Latency())
 }

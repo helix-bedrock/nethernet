@@ -6,11 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"net"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/helix-bedrock/nethernet/internal/rnd"
 
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v4"
@@ -20,7 +21,7 @@ import (
 // and other aliases. It allows customizing logging, WebRTC API settings, and contexts for a negotiation.
 type Dialer struct {
 	// ConnectionID is the unique ID of a Conn being established. If zero, a random value will be automatically
-	// set from [rand.Uint64].
+	// set from a cryptographically random number.
 	ConnectionID uint64
 
 	// Log is used for logging messages at various log levels. If nil, the default [slog.Logger] will be automatically
@@ -143,7 +144,7 @@ func (d Dialer) Dial(networkID string, signaling Signaling) (*Conn, error) {
 // asynchronously; it is abandoned after [SignalErrorTimeout].
 func (d Dialer) DialContext(ctx context.Context, networkID string, signaling Signaling) (_ *Conn, err error) {
 	if d.ConnectionID == 0 {
-		d.ConnectionID = rand.Uint64()
+		d.ConnectionID = rnd.Uint64()
 	}
 	if d.API == nil {
 		d.API = webrtc.NewAPI()
@@ -200,7 +201,7 @@ func (d Dialer) DialContext(ctx context.Context, networkID string, signaling Sig
 		// For client connections, the server should never open a data channel.
 		//
 		// This handler function itself is invoked while holding an internal lock, so call close in a goroutine to avoid deadlock.
-		go c.close(fmt.Errorf("data channel %q was unexpectedly opened by remote peer", channel.Label()))
+		go func(err error) { _ = c.close(err) }(fmt.Errorf("data channel %q was unexpectedly opened by remote peer", channel.Label()))
 	})
 
 	disableTrickleICE := shouldDisableTrickleICE(d.DisableTrickleICE, signaling)

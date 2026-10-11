@@ -25,7 +25,7 @@ func TestDialedConnSurvivesSignalingCloseAfterNegotiation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	accepted := make(chan net.Conn, 1)
 	acceptErr := make(chan error, 1)
@@ -45,7 +45,7 @@ func TestDialedConnSurvivesSignalingCloseAfterNegotiation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DialContext() error = %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	var serverConn net.Conn
 	select {
@@ -55,7 +55,7 @@ func TestDialedConnSurvivesSignalingCloseAfterNegotiation(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatalf("Accept() timed out: %v", ctx.Err())
 	}
-	defer serverConn.Close()
+	defer func() { _ = serverConn.Close() }()
 
 	client.close()
 	select {
@@ -101,7 +101,7 @@ func TestConcurrentDialersShareSignaling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
@@ -139,7 +139,7 @@ func TestConcurrentDialersShareSignaling(t *testing.T) {
 				t.Fatalf("DialContext() error = %v", result.err)
 			}
 			clientConns = append(clientConns, result.conn)
-			defer result.conn.Close()
+			defer func() { _ = result.conn.Close() }()
 		case <-ctx.Done():
 			t.Fatalf("DialContext() timed out: %v", ctx.Err())
 		}
@@ -150,7 +150,7 @@ func TestConcurrentDialersShareSignaling(t *testing.T) {
 		select {
 		case conn := <-accepted:
 			serverConns = append(serverConns, conn)
-			defer conn.Close()
+			defer func() { _ = conn.Close() }()
 		case err := <-acceptErr:
 			t.Fatalf("Accept() error = %v", err)
 		case <-ctx.Done():
@@ -206,7 +206,7 @@ func TestListenerRejectsDuplicateConn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second*10)
 	defer cancel()
@@ -215,7 +215,7 @@ func TestListenerRejectsDuplicateConn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DialContext = %s, expected nil", err)
 	}
-	defer firstConn.Close()
+	defer func() { _ = firstConn.Close() }()
 
 	_, err = Dialer{ConnectionID: 20}.DialContext(ctx, server.NetworkID(), client)
 	if err == nil {
@@ -234,7 +234,7 @@ func testDialListener(t *testing.T, disableTrickle bool) {
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	accepted := make(chan net.Conn, 1)
 	acceptErr := make(chan error, 1)
@@ -256,7 +256,7 @@ func testDialListener(t *testing.T, disableTrickle bool) {
 	if err != nil {
 		t.Fatalf("DialContext() error = %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	var serverConn net.Conn
 	select {
@@ -266,7 +266,7 @@ func testDialListener(t *testing.T, disableTrickle bool) {
 	case <-ctx.Done():
 		t.Fatalf("Accept() timed out: %v", ctx.Err())
 	}
-	defer serverConn.Close()
+	defer func() { _ = serverConn.Close() }()
 
 	if disableTrickle {
 		if got := client.signalCount(SignalTypeCandidate) + server.signalCount(SignalTypeCandidate); got != 0 {

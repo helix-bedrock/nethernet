@@ -122,6 +122,7 @@ const (
 	maxPacketPayloadLength = 1<<16 - 1
 )
 
+// IDs of LAN discovery packets.
 const (
 	IDRequestPacket uint16 = iota
 	IDResponsePacket

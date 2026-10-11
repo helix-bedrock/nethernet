@@ -36,7 +36,7 @@ func TestClientSignalDeliversSDPAnswer(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(answer))
 	}))
-	defer server.Close()
+	defer func() { server.Close() }()
 
 	client := ClientConfig{NetworkID: "123"}.New()
 	signals := make(chan *nethernet.Signal, 1)
@@ -113,7 +113,7 @@ func TestHandlerServesSDPAnswer(t *testing.T) {
 
 	handler.ServeHTTP(recorder, req)
 	result := recorder.Result()
-	defer result.Body.Close()
+	defer func() { _ = result.Body.Close() }()
 
 	if result.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want %d", result.StatusCode, http.StatusOK)
@@ -150,7 +150,7 @@ func TestHandlerRejectsOversizedSDPOffer(t *testing.T) {
 
 	handler.ServeHTTP(recorder, req)
 	result := recorder.Result()
-	defer result.Body.Close()
+	defer func() { _ = result.Body.Close() }()
 
 	if result.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want %d", result.StatusCode, http.StatusRequestEntityTooLarge)
@@ -213,7 +213,7 @@ func TestHandlerReturnsServiceUnavailableWhenOfferNotAdmitted(t *testing.T) {
 
 	handler.ServeHTTP(recorder, req)
 	result := recorder.Result()
-	defer result.Body.Close()
+	defer func() { _ = result.Body.Close() }()
 
 	if result.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", result.StatusCode, http.StatusServiceUnavailable)
