@@ -58,7 +58,7 @@ func FuzzBinaryReaders(f *testing.F) {
 }
 
 func FuzzPongData(f *testing.F) {
-	f.Add([]byte("MCPE;Helix;800;1.26;1;10;123;world;Survival;1;19132;19132;0;"))
+	f.Add([]byte("MCPE;Helix;2225;1.26.60;1;10;123;world;Survival;1;19132;19132;0;"))
 	f.Add([]byte(""))
 	f.Add([]byte(";;;;;;;;"))
 	f.Fuzz(func(t *testing.T, b []byte) {
