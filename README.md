@@ -4,7 +4,7 @@ NetherNet for Minecraft: Bedrock Edition: the WebRTC-based transport newer Bedro
 clients use for friends lists, LAN games and Xbox Live joins, with full low-level
 access for servers.
 
-**Status:** in development. The API will change as low-level hooks are added.
+**Status as of 2026-10-29:** in development. The API will change as low-level hooks are added. Server identity keys load, save and generate the way BDS 1.26.60 does (`keys/server_identity_key.pem`).
 
 Part of [Helix](https://github.com/helix-bedrock), an open-source Minecraft: Bedrock
 Edition server engine in Go. Helix maintains this library.
