@@ -96,6 +96,10 @@ type Dialer struct {
 	// This behavior can be seen when connecting to dedicated servers with the
 	// 'nethernet-disable-trickle-ice' setting property set to 'true'.
 	DisableTrickleICE bool
+
+	// MaxPacketSize is the largest packet the server may send, joined from its segments. If zero,
+	// [DefaultMaxPacketSize].
+	MaxPacketSize int
 }
 
 // Dial establishes a Conn with a remote network referenced by the ID with a 15-second timeout.
@@ -147,7 +151,7 @@ func (d Dialer) DialContext(ctx context.Context, networkID string, signaling Sig
 		d.ConnectionID = rnd.Uint64()
 	}
 	if d.API == nil {
-		d.API = webrtc.NewAPI()
+		d.API = newAPI()
 	}
 	if d.Log == nil {
 		d.Log = slog.Default()
@@ -186,6 +190,7 @@ func (d Dialer) DialContext(ctx context.Context, networkID string, signaling Sig
 	if err != nil {
 		return nil, fmt.Errorf("create conn: %w", err)
 	}
+	c.maxPacketSize = d.MaxPacketSize
 	defer func() {
 		if err != nil {
 			_ = c.close(fmt.Errorf("dial failure: %w", err))

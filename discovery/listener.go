@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,11 @@ type ListenConfig struct {
 	// DisableBroadcast stops the Listener from looking for other servers, as a server has no
 	// need to. BDS only broadcasts while it has someone to look for.
 	DisableBroadcast bool
+
+	// AllowPublic takes packets from any address. By default only those that can come from this
+	// network are taken (see the note on local addresses), so a server reachable from the
+	// internet cannot be used to reflect replies at a forged address.
+	AllowPublic bool
 
 	// Log is used for logging messages at various levels.
 	Log *slog.Logger
@@ -86,6 +92,9 @@ func (conf ListenConfig) Listen(addr string) (*Listener, error) {
 
 		closed: make(chan struct{}),
 	}
+	if !conf.AllowPublic {
+		l.networks = localNetworks()
+	}
 
 	go l.listen()
 	go l.background()
@@ -108,6 +117,8 @@ type Listener struct {
 
 	// conf is the ListenConfig used for [ListenConfig.Listen].
 	conf ListenConfig
+	// networks are this host's networks, from which packets are taken.
+	networks []netip.Prefix
 
 	// pongData atomically stores the application data for responding to the clients
 	// broadcasting RequestPacket with a ResponsePacket containing the same data.
@@ -261,6 +272,10 @@ func (l *Listener) write(pk Packet, addr net.Addr) error {
 // handlePacket handles a packet data received from the remote network. An addr will be mapped
 // for the NetherNet ID for future use in [NetherNet.Signal], if decoding was successful.
 func (l *Listener) handlePacket(data []byte, addr net.Addr) error {
+	if !l.isLocal(addr) {
+		// Not decrypted, not answered, not logged: there may be very many.
+		return nil
+	}
 	pk, senderID, err := Unmarshal(data)
 	if err != nil {
 		return fmt.Errorf("decode: %w", err)
@@ -281,6 +296,10 @@ func (l *Listener) handlePacket(data []byte, addr net.Addr) error {
 
 	l.addressesMu.Lock()
 	a, ok := l.addresses[senderID]
+	if !ok && len(l.addresses) >= maxPeers {
+		l.addressesMu.Unlock()
+		return nil
+	}
 	if !ok {
 		a = address{
 			networkID: senderID,
@@ -325,7 +344,9 @@ func (l *Listener) handleRequest(addr net.Addr) error {
 // It stores its ApplicationData to the responses atomically along with the sender ID.
 func (l *Listener) handleResponse(pk *ResponsePacket, senderID uint64) {
 	l.responsesMu.Lock()
-	l.responses[senderID] = pk.ApplicationData
+	if _, ok := l.responses[senderID]; ok || len(l.responses) < maxPeers {
+		l.responses[senderID] = pk.ApplicationData
+	}
 	l.responsesMu.Unlock()
 }
 

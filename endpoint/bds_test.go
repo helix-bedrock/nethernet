@@ -207,7 +207,7 @@ func TestServerDropsOversized(t *testing.T) {
 	}
 }
 
-// Past 64 open connections a new one is closed at once.
+// Past what one address may hold, a new connection from it is closed at once.
 func TestServerCapsOpenConnections(t *testing.T) {
 	addr, _ := serveTest(t)
 	var open []net.Conn

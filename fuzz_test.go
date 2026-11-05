@@ -24,7 +24,7 @@ func FuzzParseMessage(f *testing.F) {
 	f.Add([]byte{0, 1, 2, 3})
 	f.Add([]byte{1, 0, 0, 0, 0})
 	f.Fuzz(func(t *testing.T, b []byte) {
-		_, _ = parseMessage(b)
+		_, _, _ = parseMessage(b)
 	})
 }
 

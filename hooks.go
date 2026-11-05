@@ -212,6 +212,14 @@ func (conn *Conn) runMessage(in bool, r MessageReliability, b []byte) ([]byte, b
 	return e.Data, true
 }
 
+// messageOutHooked reports whether any hook sees outgoing messages, and so may keep one.
+func (conn *Conn) messageOutHooked() bool {
+	if lh := conn.lhooks(); lh != nil && lh.messageOut.Get() != nil {
+		return true
+	}
+	return conn.hooks.messageOut.Get() != nil
+}
+
 // runPacket runs packet hooks. It returns the (possibly replaced) data and
 // false if a hook dropped it.
 func (conn *Conn) runPacket(in bool, r MessageReliability, b []byte) ([]byte, bool) {

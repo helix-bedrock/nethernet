@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,7 +20,14 @@ const (
 	maxOpenConnections = 64
 	// maxRequestSize is how many bytes BDS takes from one connection. It drops any that sends more.
 	maxRequestSize = 0x10000
+	// maxConnectionsPerIP is how many of the open connections one address may hold. BDS has no
+	// such limit, so one address trickling 64 slow requests could keep everyone else out for 30
+	// seconds. A join takes one or two short requests, so players behind one NAT stay well under it.
+	maxConnectionsPerIP = 16
 )
+
+// headerEnd ends the headers of a request.
+var headerEnd = []byte("\r\n\r\n")
 
 // tlsHandshakeFailure is a fatal TLS handshake_failure alert. Clients try https first, and this
 // tells them at once to go on to http.
@@ -30,7 +38,7 @@ var tlsHandshakeFailure = []byte{0x15, 0x03, 0x01, 0x00, 0x02, 0x02, 0x28}
 // answered with a handshake_failure alert, anything malformed dropped with no reply, and replies
 // with only its headers in its order. It blocks until l fails or [Handler.Close] closes it.
 func (h *Handler) ServeListener(l net.Listener) error {
-	s := &server{h: h, l: l, conns: make(map[net.Conn]struct{})}
+	s := &server{h: h, l: l, conns: make(map[net.Conn]struct{}), perIP: make(map[netip.Addr]int)}
 	h.closeFunc = s.close
 	h.addr = l.Addr()
 	for {
@@ -39,7 +47,7 @@ func (h *Handler) ServeListener(l net.Listener) error {
 			return err
 		}
 		if !s.add(c) {
-			h.conf.Logger.Warn("rejecting new connection: too many open", "max", maxOpenConnections)
+			h.conf.Logger.Warn("rejecting new connection: too many open", "max", maxOpenConnections, "perAddress", maxConnectionsPerIP, "remote", c.RemoteAddr())
 			_ = c.Close()
 			continue
 		}
@@ -53,6 +61,8 @@ type server struct {
 	l     net.Listener
 	mu    sync.Mutex
 	conns map[net.Conn]struct{}
+	// perIP counts the open connections of each address.
+	perIP map[netip.Addr]int
 }
 
 // add counts a new connection, if there is room.
@@ -62,8 +72,35 @@ func (s *server) add(c net.Conn) bool {
 	if len(s.conns) >= maxOpenConnections {
 		return false
 	}
+	ip := remoteIP(c)
+	if s.perIP[ip] >= maxConnectionsPerIP {
+		return false
+	}
+	s.perIP[ip]++
 	s.conns[c] = struct{}{}
 	return true
+}
+
+// remove forgets a closed connection.
+func (s *server) remove(c net.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.conns[c]; !ok {
+		return
+	}
+	delete(s.conns, c)
+	ip := remoteIP(c)
+	if s.perIP[ip]--; s.perIP[ip] <= 0 {
+		delete(s.perIP, ip)
+	}
+}
+
+// remoteIP is the address a connection comes from, IPv4 in IPv6 unmapped. Unknown is the zero Addr.
+func remoteIP(c net.Conn) netip.Addr {
+	if a, ok := c.RemoteAddr().(*net.TCPAddr); ok {
+		return a.AddrPort().Addr().Unmap()
+	}
+	return netip.Addr{}
 }
 
 // close stops the listener and every connection.
@@ -81,9 +118,7 @@ func (s *server) close() error {
 func (s *server) serve(c net.Conn) {
 	defer func() {
 		_ = c.Close()
-		s.mu.Lock()
-		delete(s.conns, c)
-		s.mu.Unlock()
+		s.remove(c)
 	}()
 	log := s.h.conf.Logger.With("remote", c.RemoteAddr())
 	if err := c.SetDeadline(time.Now().Add(requestTimeout)); err != nil {
@@ -91,6 +126,7 @@ func (s *server) serve(c net.Conn) {
 	}
 	var buf []byte
 	chunk := make([]byte, 4096)
+	headers := false
 	for {
 		n, err := c.Read(chunk)
 		if n > 0 {
@@ -103,6 +139,17 @@ func (s *server) serve(c net.Conn) {
 				log.Debug("received TLS ClientHello: sending handshake_failure")
 				_, _ = c.Write(tlsHandshakeFailure)
 				return
+			}
+			// Look only at what came, and what could finish a split end of headers, so a
+			// request sent a byte at a time is not scanned again from the start each time.
+			if !headers {
+				headers = bytes.Contains(buf[max(0, len(buf)-n-len(headerEnd)+1):], headerEnd)
+			}
+			if !headers {
+				if err != nil {
+					return
+				}
+				continue
 			}
 			req, complete, perr := parseRequest(buf)
 			if perr != nil {

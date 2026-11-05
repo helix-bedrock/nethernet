@@ -85,6 +85,8 @@ type Conn struct {
 	// maxSegmentPayload is the negotiated SCTP message size minus the one-byte
 	// NetherNet fragment header.
 	maxSegmentPayload atomic.Uint32
+	// maxPacketSize is the largest packet taken from the peer. 0 is DefaultMaxPacketSize.
+	maxPacketSize int
 
 	readMu  sync.Mutex
 	readBuf []byte
@@ -238,10 +240,20 @@ func (conn *Conn) send(data []byte, reliability MessageReliability) (n int, err 
 			return 0, fmt.Errorf("data too large: %d bytes requires %d segments (max %d)", len(data), totalSegments, math.MaxUint8)
 		}
 
+		// pion copies what it sends, so one buffer serves every segment, unless a hook may keep it.
+		hooked := conn.messageOutHooked()
 		remaining := totalSegments - 1
 		for i := 0; i == 0 || i < len(data); i += segmentSize {
 			frag := data[i:min(len(data), i+segmentSize)]
-			segment, keep := conn.runMessage(false, reliability, append([]byte{uint8(remaining)}, frag...))
+			var segment []byte
+			if !hooked {
+				segment = d.sendBuf[:0]
+			}
+			segment = append(append(segment, uint8(remaining)), frag...)
+			if !hooked && cap(segment) <= maxKeptSendBuffer {
+				d.sendBuf = segment[:0]
+			}
+			segment, keep := conn.runMessage(false, reliability, segment)
 			if !keep {
 				n += len(frag)
 				remaining--

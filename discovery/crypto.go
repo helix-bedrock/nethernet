@@ -13,9 +13,11 @@ import (
 // key is the encryption key used for packets transmitted during LAN discovery.
 var key = sha256.Sum256(binary.LittleEndian.AppendUint64(nil, 0xdeadbeef)) // 0xdeadbeef is also referenced as Application ID
 
+// block is the AES cipher for key. It is read-only, so it is made once rather than per packet.
+var block, _ = aes.NewCipher(key[:])
+
 // encrypt encrypts the content of the bytes using AES-ECB with PKCS7 padding.
 func encrypt(src []byte) []byte {
-	block, _ := aes.NewCipher(key[:])
 	mode := ecb.NewECBEncrypter(block)
 	pkcs7 := padding.NewPkcs7Padding(block.BlockSize())
 	src, _ = pkcs7.Pad(src)
@@ -26,10 +28,6 @@ func encrypt(src []byte) []byte {
 
 // decrypt decrypts the content of the bytes using AES-ECB with PKCS7 padding.
 func decrypt(src []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key[:])
-	if err != nil {
-		return nil, fmt.Errorf("make block: %w", err)
-	}
 	if len(src) == 0 || len(src)%block.BlockSize() != 0 {
 		return nil, fmt.Errorf("invalid ciphertext length: %d", len(src))
 	}
@@ -37,7 +35,7 @@ func decrypt(src []byte) ([]byte, error) {
 	dst := make([]byte, len(src))
 	mode.CryptBlocks(dst, src)
 	pkcs7 := padding.NewPkcs7Padding(block.BlockSize())
-	dst, err = pkcs7.Unpad(dst)
+	dst, err := pkcs7.Unpad(dst)
 	if err != nil {
 		return nil, fmt.Errorf("unpad: %w", err)
 	}

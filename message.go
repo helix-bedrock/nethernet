@@ -142,6 +142,8 @@ type dataChannel struct {
 	// When writing multiple segments to the dataChannel, it should be locked using
 	// its embedded [sync.Mutex] for guaranteeing ordered segment counts.
 	write sync.Mutex
+	// sendBuf is reused for each segment written, guarded by write.
+	sendBuf []byte
 
 	// packets can be used to receive packets that are fully-reconstructed from
 	// one or more segments received in the dataChannel.
@@ -153,24 +155,21 @@ type dataChannel struct {
 	once sync.Once
 }
 
-// message represents the structure of remote messages sent in ReliableDataChannel.
+// message is the reassembly state of ReliableDataChannel: what is left to come and what came.
 type message struct {
-	// segments represents the number of segments the message is split into.
+	// segments is how many segments are still to come.
 	segments uint8
-	// data represents the payload of the message.
+	// data is the packet so far.
 	data []byte
 }
 
-// parseMessage parses the provided data into a message. The first byte indicates the count of segments,
-// and the remaining bytes are its payload. If the data is less than 2 bytes, an error is returned.
-func parseMessage(b []byte) (*message, error) {
+// parseMessage splits a segment into its count of segments to come and its payload. A segment
+// needs its header byte and at least one byte of payload.
+func parseMessage(b []byte) (segments uint8, data []byte, err error) {
 	if len(b) < 2 {
-		return nil, io.ErrUnexpectedEOF
+		return 0, nil, io.ErrUnexpectedEOF
 	}
-	return &message{
-		segments: b[0],
-		data:     b[1:],
-	}, nil
+	return b[0], b[1:], nil
 }
 
 // handleMessage handles a message received from a [webrtc.DataChannel] for the reliability. It parses
@@ -183,30 +182,44 @@ func (c *dataChannel) handleMessage(conn *Conn, b []byte) error {
 	default:
 	}
 
-	msg, err := parseMessage(b)
+	segments, data, err := parseMessage(b)
 	if err != nil {
 		return fmt.Errorf("parse: %w", err)
 	}
+	limit := conn.packetLimit()
 
 	// BDS never joins unreliable messages and ignores their first byte.
 	if c.reliability == MessageReliabilityUnreliable {
-		return c.deliver(conn, msg.data)
+		if len(data) > limit {
+			return fmt.Errorf("packet larger than %d bytes", limit)
+		}
+		return c.deliver(conn, data)
 	}
 
 	c.messageMu.Lock()
 	defer c.messageMu.Unlock()
 
-	if c.segments > 0 && c.segments-1 != msg.segments {
-		return fmt.Errorf("invalid promised segments: expected %d, got %d", c.segments-1, msg.segments)
+	if c.segments > 0 && c.segments-1 != segments {
+		return fmt.Errorf("invalid promised segments: expected %d, got %d", c.segments-1, segments)
 	}
+	if len(c.data)+len(data) > limit {
+		// A peer may promise 255 segments of 256 KiB; nothing real is that big.
+		return fmt.Errorf("packet larger than %d bytes", limit)
+	}
+	c.segments = segments
 
-	c.segments = msg.segments
-	c.data = append(c.data, msg.data...)
-
-	if c.segments > 0 {
+	if c.data == nil {
+		if segments == 0 {
+			// The usual case, one segment: pion gave this message its own slice, so it is
+			// the packet as it is, with no copy.
+			return c.deliver(conn, data)
+		}
+		c.data = make([]byte, 0, min((int(segments)+1)*len(data), limit))
+	}
+	c.data = append(c.data, data...)
+	if segments > 0 {
 		return nil
 	}
-
 	packet := c.data
 	c.data = nil
 	return c.deliver(conn, packet)

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -136,6 +137,15 @@ type ListenConfig struct {
 	// This behavior can be seen on dedicated servers with the
 	// 'nethernet-disable-trickle-ice' setting property set to 'true'.
 	DisableTrickleICE bool
+
+	// MaxPacketSize is the largest packet a client may send, joined from its segments. If zero,
+	// [DefaultMaxPacketSize]. A client sending more is disconnected.
+	MaxPacketSize int
+
+	// MaxNegotiations is how many offers are negotiated at once. Offers past it are dropped
+	// without a reply, as an unknown one is. If zero, [DefaultMaxNegotiations]; if negative, no
+	// limit, as in BDS.
+	MaxNegotiations int
 }
 
 // Listen listens on the local network ID specified by the Signaling implementation. It returns a Listener
@@ -154,7 +164,10 @@ func (conf ListenConfig) Listen(signaling Signaling) (*Listener, error) {
 		conf.Log = slog.Default()
 	}
 	if conf.API == nil {
-		conf.API = webrtc.NewAPI()
+		conf.API = newAPI()
+	}
+	if conf.MaxNegotiations == 0 {
+		conf.MaxNegotiations = DefaultMaxNegotiations
 	}
 	if conf.IssueServerIdentity == nil {
 		conf.Log.Warn("generating a new private key for this listener. a TOFU (Trust on First Use) prompt may be surfaced to players on first join")
@@ -474,6 +487,7 @@ func (n *listenerNegotiator) handleOffer(signal *Signal) error {
 		return fmt.Errorf("create peer connection: %w", err)
 	}
 	c.listener = n.Listener
+	c.maxPacketSize = n.conf.MaxPacketSize
 	established := false
 	defer func() {
 		if !established {
@@ -879,6 +893,11 @@ func (l *Listener) NotifySignal(signal *Signal) bool {
 					l.negotiationsMu.Unlock()
 					return false
 				}
+			}
+			if max := l.conf.MaxNegotiations; max > 0 && l.pending.Load() >= int32(min(max, math.MaxInt32)) {
+				l.conf.Log.Warn("dropping offer: too many negotiations", "max", max, "networkID", signal.NetworkID)
+				l.negotiationsMu.Unlock()
+				return false
 			}
 			l.pending.Add(1)
 			n = &listenerNegotiator{
