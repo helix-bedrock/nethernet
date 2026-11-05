@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/andreburgaud/crypt2go v1.8.0
-	github.com/go-jose/go-jose/v4 v4.1.4
+	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/pion/ice/v4 v4.4.4
 	github.com/pion/sdp/v3 v3.0.20
 	github.com/pion/webrtc/v4 v4.2.21-0.20260920133716-91bfc6c2039f
