@@ -38,8 +38,9 @@ type ListenConfig struct {
 	API *webrtc.API
 
 	// ConnContext provides a [context.Context] for starting the ICE, DTLS, and SCTP transports of the Conn. If nil,
-	// a default [context.Context] with 5 seconds timeout will be used. The parent [context.Context] may be used to
-	// create a [context.Context] to be returned (likely using [context.WithCancel] or [context.WithTimeout]).
+	// there is no limit, as in BDS: the server waits until ICE fails or closes, which is what ends a connection whose
+	// client has gone. The parent [context.Context] may be used to create a [context.Context] to be returned (likely
+	// using [context.WithCancel] or [context.WithTimeout]).
 	//
 	// It may be called concurrently for different connections.
 	ConnContext func(parent context.Context, conn *Conn) (context.Context, context.CancelFunc)
@@ -632,9 +633,8 @@ func (n *listenerNegotiator) log() *slog.Logger {
 	)
 }
 
-// finaliseConn finalises the Conn. Once an ICE candidate for the Conn has been signaled from the remote
-// connection, it starts the transports of the Conn using the remote description and a [context.Context]
-// returned from [ListenConfig.ConnContext].
+// finaliseConn finalises the Conn. It starts the transports of the Conn using the remote description and a
+// [context.Context] returned from [ListenConfig.ConnContext]. Candidates may still arrive after that.
 func (n *listenerNegotiator) finaliseConn(conn *Conn, d *description, channelsReady <-chan struct{}) (err error) {
 	var (
 		ctx    context.Context
@@ -644,16 +644,15 @@ func (n *listenerNegotiator) finaliseConn(conn *Conn, d *description, channelsRe
 		var cancel context.CancelFunc
 		ctx, cancel = n.conf.ConnContext(parent, conn)
 		if ctx == nil {
-			// A broken ConnContext falls back to the default timeout instead
-			// of panicking.
-			ctx, cancel = context.WithTimeout(parent, time.Second*5)
+			// A broken ConnContext falls back to the default instead of panicking.
+			ctx, cancel = context.WithCancel(parent)
 		}
 		if cancel != nil {
 			defer cancel()
 		}
 	} else {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(parent, time.Second*5)
+		ctx, cancel = context.WithCancel(parent)
 		defer cancel()
 	}
 
@@ -678,26 +677,25 @@ func (n *listenerNegotiator) finaliseConn(conn *Conn, d *description, channelsRe
 		return net.ErrClosed
 	case <-conn.ctx.Done():
 		return context.Cause(conn.ctx)
-	case <-conn.candidateReceived:
-		conn.log.Debug("received first candidate")
-		if err := n.startTransports(ctx, conn, d, channelsReady); err != nil {
-			return fmt.Errorf("start transports: %w", err)
-		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-conn.ctx.Done():
-			return context.Cause(conn.ctx)
-		case <-n.closed:
-			return net.ErrClosed
-		case n.incoming <- conn:
-			if hooks := n.hooks.connect.Get(); hooks != nil {
-				hook.Observe(n.conf.Log, conn, hooks)
-			}
-		}
-		return nil
+	default:
 	}
+	if err := n.startTransports(ctx, conn, d, channelsReady); err != nil {
+		return fmt.Errorf("start transports: %w", err)
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-conn.ctx.Done():
+		return context.Cause(conn.ctx)
+	case <-n.closed:
+		return net.ErrClosed
+	case n.incoming <- conn:
+		if hooks := n.hooks.connect.Get(); hooks != nil {
+			hook.Observe(n.conf.Log, conn, hooks)
+		}
+	}
+	return nil
 }
 
 // startTransports starts ICE as [webrtc.ICERoleControlled], then starts DTLS

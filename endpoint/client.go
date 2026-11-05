@@ -167,6 +167,9 @@ func (c *Client) Status(ctx context.Context, address string) (Status, error) {
 	}
 }
 
+// maxSDPAnswerSize caps the SDP answer read from a server at 1 MiB.
+const maxSDPAnswerSize int64 = 1 << 20
+
 // parseURL parses the given network ID as a URL used for making requests
 // to remote servers.
 func parseURL(s string) (*url.URL, error) {
@@ -209,12 +212,12 @@ func (c *Client) Signal(ctx context.Context, signal *nethernet.Signal) error {
 		if resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("%s %s: %s", req.Method, req.URL, resp.Status)
 		}
-		b, err := io.ReadAll(io.LimitReader(resp.Body, maxSDPBodySize+1))
+		b, err := io.ReadAll(io.LimitReader(resp.Body, maxSDPAnswerSize+1))
 		if err != nil {
 			return fmt.Errorf("read response body: %w", err)
 		}
-		if int64(len(b)) > maxSDPBodySize {
-			return fmt.Errorf("SDP answer exceeds %d bytes", maxSDPBodySize)
+		if int64(len(b)) > maxSDPAnswerSize {
+			return fmt.Errorf("SDP answer exceeds %d bytes", maxSDPAnswerSize)
 		}
 		if len(b) == 0 {
 			return errors.New("missing SDP answer in response body")

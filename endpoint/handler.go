@@ -11,7 +11,9 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/helix-bedrock/nethernet/internal/rnd"
@@ -28,7 +30,7 @@ type HandlerConfig struct {
 	// NegotiationContext returns the [context.Context] that controls how long
 	// the Handler waits for the listener to produce an SDP answer.
 	// The resulting [context.Context] must be derived from the parent context.
-	// If nil, a context with a 15-second timeout will be returned.
+	// If nil, a context with BDS's 10-second timeout will be returned.
 	NegotiationContext func(parent context.Context) (context.Context, context.CancelFunc)
 
 	// Credentials is an optional function that supplies ICE credentials
@@ -57,7 +59,7 @@ func (conf HandlerConfig) New() *Handler {
 	}
 	if conf.NegotiationContext == nil {
 		conf.NegotiationContext = func(parent context.Context) (context.Context, context.CancelFunc) {
-			return context.WithTimeout(parent, time.Second*15)
+			return context.WithTimeout(parent, answerTimeout)
 		}
 	}
 	if conf.NetworkID == "" {
@@ -67,11 +69,8 @@ func (conf HandlerConfig) New() *Handler {
 	h := &Handler{
 		pending: make(map[connectionKey]chan<- *nethernet.Signal),
 
-		mux:  http.NewServeMux(),
 		conf: conf,
 	}
-	h.mux.HandleFunc("GET /v1/join", h.handlePing)
-	h.mux.HandleFunc("POST /v1/join/{networkID}", h.handleOffer)
 	return h
 }
 
@@ -104,7 +103,7 @@ func (conf HandlerConfig) Serve(address string) (*Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return conf.serve(l)
+	return conf.serve(NewListener(l, conf.Logger))
 }
 
 // serve starts an HTTP server using the provided listener and returns the Handler attached to it.
@@ -113,10 +112,8 @@ func (conf HandlerConfig) serve(l net.Listener) (*Handler, error) {
 	var cancel context.CancelCauseFunc
 	h.ctx, cancel = context.WithCancelCause(context.Background())
 	server := &http.Server{
-		Handler:           h,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		IdleTimeout:       30 * time.Second,
+		Handler:     h,
+		ReadTimeout: RequestTimeout,
 	}
 	// Call [http.Server.Serve] in a goroutine since it is a blocking method.
 	go func() {
@@ -131,8 +128,12 @@ func (conf HandlerConfig) serve(l net.Listener) (*Handler, error) {
 	return h, nil
 }
 
-// maxSDPBodySize caps HTTP SDP offer and answer bodies at 1 MiB.
-const maxSDPBodySize int64 = 1 << 20
+const (
+	// joinPath is the path of the endpoint.
+	joinPath = "/v1/join"
+	// answerTimeout is how long BDS waits for an answer to an offer before a 504.
+	answerTimeout = 10 * time.Second
+)
 
 // ServeTLS is a utility method that sets up an HTTP/TLS server on the specified
 // address using the TLS certificate and key file. It is equivalent of
@@ -172,8 +173,8 @@ type Handler struct {
 	// pendingMu guards pending from concurrent read/write access.
 	pendingMu sync.RWMutex
 
-	// mux routes incoming HTTP requests to the appropriate handler.
-	mux *http.ServeMux
+	// connectionIDs counts the connections made, BDS's connection IDs.
+	connectionIDs atomic.Uint64
 	// conf is the HandlerConfig used to create this Handler.
 	conf HandlerConfig
 
@@ -208,7 +209,8 @@ func (h *Handler) Signal(ctx context.Context, signal *nethernet.Signal) error {
 	ch, ok := h.pending[key]
 	h.pendingMu.RUnlock()
 	if !ok {
-		return fmt.Errorf("unexpected connection ID: %s", key)
+		// The reply is sent or the request gone, so there is no one to tell. BDS drops it too.
+		return nil
 	}
 	select {
 	case <-ctx.Done():
@@ -216,7 +218,8 @@ func (h *Handler) Signal(ctx context.Context, signal *nethernet.Signal) error {
 	case ch <- signal:
 		return nil
 	default:
-		return errors.New("channel buffer is full")
+		// Already answered.
+		return nil
 	}
 }
 
@@ -323,22 +326,14 @@ func (h *Handler) Status(status Status) {
 	h.statusMu.Unlock()
 }
 
-// handlePing handles a GET request to the /v1/join endpoint.
-// It responds with the current server status, if one has been set by
-// the caller via [Handler.Status] or by the upstream game listener via
-// [Handler.PongData]. Otherwise, it responds with an empty body.
-func (h *Handler) handlePing(w http.ResponseWriter, req *http.Request) {
-	req.Close = true // Do not keep-alive the TCP connection.
-	log := h.conf.Logger.With("method", req.Method, "url", req.URL)
-
+// handlePing handles a GET request to the /v1/join endpoint. It responds with
+// the current server status, if one has been set by the caller via
+// [Handler.Status] or by the upstream game listener via [Handler.PongData].
+// Otherwise, the body is empty.
+func (h *Handler) handlePing(w http.ResponseWriter) {
 	h.statusMu.RLock()
 	status := h.status
 	h.statusMu.RUnlock()
-	if len(status) == 0 {
-		log.Debug("no status was assigned to Handler")
-		w.WriteHeader(http.StatusOK)
-		return
-	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -346,41 +341,31 @@ func (h *Handler) handlePing(w http.ResponseWriter, req *http.Request) {
 }
 
 // handleOffer handles a POST request to the /v1/join/{networkID} endpoint.
-// It reads the SDP offer from the request body and forwards it to all
-// registered listeners via [Handler.negotiate]. The resulting SDP answer
-// may be sent back to the client.
-func (h *Handler) handleOffer(w http.ResponseWriter, req *http.Request) {
-	req.Close = true // Do not keep-alive the TCP connection.
+// It reads the SDP offer from the request body and forwards it to the
+// registered listener via [Handler.negotiate]. Whatever the listener signals
+// back for the connection is the reply, as BDS does.
+func (h *Handler) handleOffer(w http.ResponseWriter, req *http.Request, networkID string) {
 	log := h.conf.Logger.With("method", req.Method, "url", req.URL)
-	networkID := req.PathValue("networkID")
-	if networkID == "" {
-		log.Error("missing networkID in path")
-		writeText(w, http.StatusBadRequest, "Expected /v1/join/{networkID}")
+	id, err := strconv.ParseUint(networkID, 10, 64)
+	if err != nil {
+		log.Debug("network ID must be uint64", "error", err)
+		writeText(w, http.StatusBadRequest, "Expected /v1/join/{networkId}")
 		return
 	}
-
-	if _, err := strconv.ParseUint(networkID, 10, 64); err != nil {
-		log.Error("network ID must be uint64", "error", err)
-		writeText(w, http.StatusBadRequest, "Network ID must be uint64")
+	if id == 0 {
+		writeText(w, http.StatusBadRequest, "Invalid networkId")
 		return
 	}
 	log = log.With("networkID", networkID)
 
-	req.Body = http.MaxBytesReader(w, req.Body, maxSDPBodySize)
-	b, err := io.ReadAll(req.Body)
+	b, err := io.ReadAll(http.MaxBytesReader(w, req.Body, maxRequestSize))
 	if err != nil {
-		var maxBytesError *http.MaxBytesError
-		if errors.As(err, &maxBytesError) {
-			log.Error("SDP offer is too large", "limit", maxBytesError.Limit)
-			writeText(w, http.StatusRequestEntityTooLarge, "SDP offer is too large")
-			return
-		}
-		log.Error("error reading request body", "error", err)
-		writeText(w, http.StatusBadRequest, "Missing SDP offer in request body")
+		// Too much, or the connection went: BDS drops it without a reply.
+		log.Debug("error reading request body", "error", err)
+		dropConnection(w)
 		return
 	}
 	if len(b) == 0 {
-		log.Error("missing SDP offer in request body")
 		writeText(w, http.StatusBadRequest, "Missing SDP offer in request body")
 		return
 	}
@@ -390,35 +375,31 @@ func (h *Handler) handleOffer(w http.ResponseWriter, req *http.Request) {
 
 	signal, err := h.negotiate(ctx, networkID, string(b))
 	if err != nil {
-		log.Error("error negotiating",
-			slog.String("offer", string(b)),
-			slog.Any("error", err),
-		)
+		log.Error("error negotiating", slog.Any("error", err))
 		if errors.Is(err, errOfferNotAdmitted) {
 			writeText(w, http.StatusServiceUnavailable, "Service unavailable")
 			return
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
-			writeText(w, http.StatusBadGateway, "Timed out waiting for answer")
+			writeText(w, http.StatusGatewayTimeout, "Gateway Timeout")
 			return
 		}
-		writeText(w, http.StatusInternalServerError, "An error has occurred while handling this request")
+		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
-	// Wait until the Listener generates an answer SDP for the connection.
-	switch signal.Type {
-	case nethernet.SignalTypeAnswer:
-		w.Header().Set("Content-Type", "application/sdp")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(signal.Data))
-	case nethernet.SignalTypeError:
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(signal.Data))
-	default:
-		log.Error("unexpected negotiation result", slog.String("signal", signal.String()))
-		writeText(w, http.StatusInternalServerError, "An error has occurred while handling this request")
-		return
+	// BDS takes the third word of any signal as the answer, so an error's code is
+	// sent as a 200 too.
+	w.Header().Set("Content-Type", "application/sdp")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(signal.Data))
+}
+
+// dropConnection closes the connection of w without a reply, if it can.
+func dropConnection(w http.ResponseWriter) {
+	conn, _, err := http.NewResponseController(w).Hijack()
+	if err == nil {
+		_ = conn.Close()
 	}
 }
 
@@ -451,7 +432,7 @@ func (h *Handler) negotiate(ctx context.Context, networkID, offer string) (*neth
 
 	signal := &nethernet.Signal{
 		Type:         nethernet.SignalTypeOffer,
-		ConnectionID: rnd.Uint64(),
+		ConnectionID: h.connectionIDs.Add(1),
 		Data:         offer,
 		NetworkID:    networkID,
 	}
@@ -472,14 +453,9 @@ func (h *Handler) negotiate(ctx context.Context, networkID, offer string) (*neth
 		return nil, errOfferNotAdmitted
 	}
 
+	// On a timeout BDS only forgets the request: the session goes on until ICE ends it.
 	select {
 	case <-ctx.Done():
-		_ = notifier.NotifySignal(&nethernet.Signal{
-			Type:         nethernet.SignalTypeError,
-			ConnectionID: signal.ConnectionID,
-			Data:         strconv.FormatUint(nethernet.ErrorCodeNegotiationTimeoutWaitingForResponse, 10),
-			NetworkID:    signal.NetworkID,
-		})
 		return nil, ctx.Err()
 	case result := <-ch:
 		return result, nil
@@ -490,10 +466,20 @@ func (h *Handler) negotiate(ctx context.Context, networkID, offer string) (*neth
 // before it could be processed.
 var errOfferNotAdmitted = errors.New("nethernet/endpoint: offer not admitted")
 
-// ServeHTTP implements [http.Handler] by delegating the given response writer
-// and the request to the internal [http.ServeMux].
+// ServeHTTP implements [http.Handler] with BDS's routes: GET /v1/join with any
+// query, and POST /v1/join/ followed by the rest of the target. Anything else is
+// a 404. Every reply closes the connection and has no date.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	h.mux.ServeHTTP(w, req)
+	w.Header().Set("Connection", "close")
+	w.Header()["Date"] = nil
+	switch {
+	case req.Method == http.MethodGet && req.URL.Path == joinPath:
+		h.handlePing(w)
+	case req.Method == http.MethodPost && strings.HasPrefix(req.URL.RequestURI(), joinPath+"/"):
+		h.handleOffer(w, req, strings.TrimPrefix(req.URL.RequestURI(), joinPath+"/"))
+	default:
+		writeText(w, http.StatusNotFound, "Not Found")
+	}
 }
 
 // connectionKey uniquely identifies a single in-progress negotiation.

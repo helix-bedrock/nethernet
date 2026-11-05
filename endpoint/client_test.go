@@ -76,7 +76,7 @@ func TestClientSignalDeliversSDPAnswer(t *testing.T) {
 func TestClientSignalRejectsOversizedSDPAnswer(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_, _ = io.Copy(w, strings.NewReader(strings.Repeat("x", int(maxSDPBodySize)+1)))
+		_, _ = io.Copy(w, strings.NewReader(strings.Repeat("x", int(maxSDPAnswerSize)+1)))
 	}))
 	defer server.Close()
 
@@ -88,7 +88,7 @@ func TestClientSignalRejectsOversizedSDPAnswer(t *testing.T) {
 		NetworkID:    server.URL,
 		Data:         "offer",
 	})
-	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("exceeds %d bytes", maxSDPBodySize)) {
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("exceeds %d bytes", maxSDPAnswerSize)) {
 		t.Fatalf("Signal() error = %v, want SDP size error", err)
 	}
 }
@@ -140,20 +140,6 @@ func TestServeTLSCloseCancelsContextWithoutServerClosedCause(t *testing.T) {
 	}
 	if err := context.Cause(handler.Context()); !errors.Is(err, http.ErrServerClosed) {
 		t.Fatalf("context cause = %v, want http.ErrServerClosed", err)
-	}
-}
-
-func TestHandlerRejectsOversizedSDPOffer(t *testing.T) {
-	handler := NewHandler()
-	req := httptest.NewRequest(http.MethodPost, "/v1/join/123", strings.NewReader(strings.Repeat("x", int(maxSDPBodySize)+1)))
-	recorder := httptest.NewRecorder()
-
-	handler.ServeHTTP(recorder, req)
-	result := recorder.Result()
-	defer func() { _ = result.Body.Close() }()
-
-	if result.StatusCode != http.StatusRequestEntityTooLarge {
-		t.Fatalf("status = %d, want %d", result.StatusCode, http.StatusRequestEntityTooLarge)
 	}
 }
 

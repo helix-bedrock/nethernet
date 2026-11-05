@@ -23,7 +23,7 @@ go test -race ./...
 
 - Root package: `Listener`, `Dialer`, `Conn`, signaling and negotiation, and the server identity key file (`identity_key.go`, as BDS keeps it).
 - `discovery`: LAN discovery packets and listener.
-- `endpoint`: signaling through Minecraft services.
+- `endpoint`: HTTP signaling as BDS does it (`Handler` for its routes and replies, `NewListener` for its connection limits and TLS refusal), and signaling through Minecraft services.
 - `examples`: runnable examples.
 
 ## Invariants: do not break these

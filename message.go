@@ -188,8 +188,9 @@ func (c *dataChannel) handleMessage(conn *Conn, b []byte) error {
 		return fmt.Errorf("parse: %w", err)
 	}
 
-	if c.reliability == MessageReliabilityUnreliable && msg.segments > 0 {
-		return fmt.Errorf("unexpected segment count on UnreliableDataChannel: %d", msg.segments)
+	// BDS never joins unreliable messages and ignores their first byte.
+	if c.reliability == MessageReliabilityUnreliable {
+		return c.deliver(conn, msg.data)
 	}
 
 	c.messageMu.Lock()
@@ -208,6 +209,11 @@ func (c *dataChannel) handleMessage(conn *Conn, b []byte) error {
 
 	packet := c.data
 	c.data = nil
+	return c.deliver(conn, packet)
+}
+
+// deliver hands a whole packet to those reading it.
+func (c *dataChannel) deliver(conn *Conn, packet []byte) error {
 	if conn != nil {
 		var keep bool
 		if packet, keep = conn.runPacket(true, c.reliability, packet); !keep {
