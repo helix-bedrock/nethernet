@@ -24,6 +24,7 @@ go test -race ./...
 - Root package: `Listener`, `Dialer`, `Conn`, signaling and negotiation, port mappings (`portmapping.go`, BDS's server-udp-ports) and the server identity key file (`identity_key.go`, as BDS keeps it).
 - `discovery`: LAN discovery packets and listener.
 - `endpoint`: HTTP signaling as BDS does it (`Handler.ServeListener` is its own HTTP server, with its routes, replies, limits and TLS refusal), and signaling through Minecraft services.
+- `signaling`: signing in to Microsoft's signaling service as BDS does (Azure AD token, WebSocket JSON-RPC, ICE servers).
 - `examples`: runnable examples.
 
 ## Invariants: do not break these

@@ -1,6 +1,6 @@
 module github.com/helix-bedrock/nethernet
 
-go 1.26
+go 1.26.0
 
 require (
 	github.com/andreburgaud/crypt2go v1.8.0
@@ -8,7 +8,8 @@ require (
 	github.com/pion/ice/v4 v4.4.4
 	github.com/pion/sdp/v3 v3.0.20
 	github.com/pion/webrtc/v4 v4.2.21-0.20260920133716-91bfc6c2039f
-	golang.org/x/crypto v0.52.0
+	golang.org/x/crypto v0.58.0
+	golang.org/x/net v0.62.0
 )
 
 require (
@@ -27,7 +28,6 @@ require (
 	github.com/pion/transport/v5 v5.0.1 // indirect
 	github.com/pion/turn/v5 v5.1.2 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
-	golang.org/x/net v0.55.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 )
