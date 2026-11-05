@@ -255,6 +255,7 @@ func TestStatusFields(t *testing.T) {
 		t.Error("the nonce changed inside its lifetime")
 	}
 	h.nonceAt = time.Now().Add(-nonceLifetime - time.Second)
+	h.Status(Status{ServerName: "a", Protocol: 2225, Version: "1.26.60", LevelName: "b", PlayerCount: 1, MaxPlayerCount: 10, OnlineAuth: true})
 	later, _ := io.ReadAll(call(h, http.MethodGet, "/v1/join", "").Body)
 	if bytes.Equal(got, later) {
 		t.Error("the nonce did not change after its lifetime")

@@ -71,6 +71,20 @@ func TestParsePortMappings(t *testing.T) {
 	}
 }
 
+// BDS's server-port-mappings takes only public:local single ports.
+func TestParseFixedPortMappings(t *testing.T) {
+	public := netip.MustParseAddr("50.0.0.1")
+	got, err := ParseFixedPortMappings("29132:19132", public)
+	if err != nil || len(got) != 1 || got[0] != (PortMapping{Min: 19132, Max: 19132, Offset: 10000, PublicIP: public}) {
+		t.Errorf("%+v %v", got, err)
+	}
+	for _, bad := range []string{"19132", "1-2:3-4", "1.1.1.1:5:6", "[::1]:5:6"} {
+		if _, err := ParseFixedPortMappings(bad, public); err == nil {
+			t.Errorf("%q was taken", bad)
+		}
+	}
+}
+
 // A host candidate gives a server-reflexive one at the mapped address, once.
 func TestMappedCandidates(t *testing.T) {
 	host := webrtc.ICECandidate{Foundation: "1", Priority: 2130706431, Address: "192.168.1.5", Protocol: webrtc.ICEProtocolUDP, Port: 19132, Typ: webrtc.ICECandidateTypeHost, Component: 1}

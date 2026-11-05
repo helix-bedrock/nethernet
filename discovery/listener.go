@@ -29,6 +29,10 @@ type ListenConfig struct {
 	// the same network. If nil, an *net.UDPAddr with net.IPv4bcast and port 7551 will be used.
 	BroadcastAddress *net.UDPAddr
 
+	// DisableBroadcast stops the Listener from looking for other servers, as a server has no
+	// need to. BDS only broadcasts while it has someone to look for.
+	DisableBroadcast bool
+
 	// Log is used for logging messages at various levels.
 	Log *slog.Logger
 }
@@ -59,7 +63,9 @@ func (conf ListenConfig) Listen(addr string) (*Listener, error) {
 		return nil, fmt.Errorf("unexpected local address type %T", conn.LocalAddr())
 	}
 
-	if conf.BroadcastAddress == nil && localAddr.Port != DefaultPort {
+	if conf.DisableBroadcast {
+		conf.BroadcastAddress = nil
+	} else if conf.BroadcastAddress == nil && localAddr.Port != DefaultPort {
 		// If the port for the address is 7551, it means no applications are listening on this network
 		// and server discovery using limited broadcast on net.IPv4bcast is not meaningful.
 		conf.BroadcastAddress = &net.UDPAddr{
@@ -181,6 +187,9 @@ func (l *Listener) Notify(n nethernet.Notifier) func() {
 		l.notifiersMu.Unlock()
 	})
 }
+
+// LocalAddr returns the UDP address the Listener is on.
+func (l *Listener) LocalAddr() net.Addr { return l.conn.LocalAddr() }
 
 // Context returns a context that is canceled when the Listener is closed.
 func (l *Listener) Context() context.Context {

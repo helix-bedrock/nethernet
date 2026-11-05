@@ -330,22 +330,29 @@ func (h *Handler) Status(status Status) {
 		status.Connection = statusConnectionNetherNet
 	}
 	h.statusMu.Lock()
+	// BDS makes a new nonce when it announces, once the last is too old.
+	if now := time.Now(); h.nonce == "" || now.Sub(h.nonceAt) > nonceLifetime {
+		h.nonce, h.nonceAt = strconv.FormatUint(rnd.Uint64(), 16), now
+	}
 	status.Nonce = h.nonce
 	h.current = &status
 	h.statusMu.Unlock()
 }
 
-// statusBody is the status as JSON, with a nonce no older than BDS keeps one. Nil with no status.
+// Nonce returns the nonce of the current status, for other signaling channels to announce too.
+func (h *Handler) Nonce() string {
+	h.statusMu.Lock()
+	defer h.statusMu.Unlock()
+	return h.nonce
+}
+
+// statusBody is the status as JSON. Nil with no status.
 func (h *Handler) statusBody() []byte {
 	h.statusMu.Lock()
 	defer h.statusMu.Unlock()
 	if h.current == nil {
 		return nil
 	}
-	if now := time.Now(); h.nonce == "" || now.Sub(h.nonceAt) > nonceLifetime {
-		h.nonce, h.nonceAt = strconv.FormatUint(rnd.Uint64(), 16), now
-	}
-	h.current.Nonce = h.nonce
 	b, err := json.Marshal(h.current)
 	if err != nil {
 		h.conf.Logger.Error("error encoding status", "error", err)

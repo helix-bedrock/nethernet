@@ -96,6 +96,42 @@ func ParsePortMappings(s string, publicIP netip.Addr) ([]PortMapping, error) {
 	return mappings, nil
 }
 
+// ParseFixedPortMappings parses BDS's server-port-mappings: entries split by commas, each exactly
+// public:local single ports, with no address of their own. Unlike server-udp-ports it does not say
+// which local ports to take. publicIP is BDS's server-public-ip.
+func ParseFixedPortMappings(s string, publicIP netip.Addr) ([]PortMapping, error) {
+	var mappings []PortMapping
+	for entry := range strings.SplitSeq(s, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if rest, ip, err := cutIPPrefix(entry); err != nil || ip.IsValid() || rest != entry {
+			return nil, fmt.Errorf("entry '%s' must not carry an IP prefix", entry)
+		}
+		public, local, ok := strings.Cut(entry, ":")
+		if !ok {
+			return nil, fmt.Errorf("entry '%s' is missing ':' separator", entry)
+		}
+		if strings.Contains(public, "-") || strings.Contains(local, "-") {
+			return nil, errors.New("port ranges are not supported in this property")
+		}
+		pub, _, err := parsePortRange(public, entry)
+		if err != nil {
+			return nil, err
+		}
+		loc, _, err := parsePortRange(local, entry)
+		if err != nil {
+			return nil, err
+		}
+		mappings = append(mappings, PortMapping{Min: loc, Max: loc, Offset: int32(pub) - int32(loc), PublicIP: publicIP})
+	}
+	if len(mappings) > maxPortMappings {
+		return nil, fmt.Errorf("too many port mappings (max %d)", maxPortMappings)
+	}
+	return mappings, nil
+}
+
 // cutIPPrefix takes the public address off the front of an entry, if it has one.
 func cutIPPrefix(entry string) (rest string, ip netip.Addr, err error) {
 	if strings.HasPrefix(entry, "[") {
