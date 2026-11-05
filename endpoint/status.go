@@ -4,12 +4,17 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/helix-bedrock/nethernet/internal/rnd"
 )
 
 // Status represents a server status of a NetherNet server.
+//
+// The fields and their order are BDS's NetherNetServerLocator::ServerData.
 type Status struct {
+	// DataVersion is the version of this format. [Handler.Status] fills it in.
+	DataVersion int `json:"dataVersion"`
 	// ServerName is the name of the server. It is displayed as the MOTD.
 	ServerName string `json:"name"`
 	// Protocol is the protocol version used by the upstream game listener.
@@ -25,7 +30,29 @@ type Status struct {
 	// GameType represents the game mode of the level running in the server in numerical value.
 	// It is 0 for survival, 1 for creative, and 2 for adventure.
 	GameType int `json:"gameType"`
+	// Editor says the world is an editor world.
+	Editor bool `json:"editor"`
+	// Hardcore says the world is hardcore.
+	Hardcore bool `json:"hardcore"`
+	// OnlineAuth says the server has the keys to check signed-in players.
+	OnlineAuth bool `json:"onlineAuth"`
+	// SelfSignedAuth says the server takes players who are not signed in.
+	SelfSignedAuth bool `json:"selfSignedAuth"`
+	// Nonce is a random value. [Handler] fills it in and changes it as BDS does.
+	Nonce string `json:"nonce"`
+	// Connection is the kind of connection. [Handler.Status] fills it in.
+	Connection int `json:"connection"`
 }
+
+const (
+	// statusDataVersion is DataVersion in BDS 1.26.60.
+	statusDataVersion = 7
+	// statusConnectionNetherNet is Connection for a server not signed in to Microsoft's
+	// signaling service, as BDS sets it by default. BDS uses 7 when it is signed in.
+	statusConnectionNetherNet = 4
+	// nonceLifetime is how long BDS keeps a nonce.
+	nonceLifetime = 300 * time.Second
+)
 
 // RakNetPongData produces a RakNet-compatible pong data from the status.
 // It is typically used for maintaining compatibility with older code that
@@ -98,6 +125,7 @@ func RakNetPongData(b []byte) (Status, error) {
 		PlayerCount:    playerCount,
 		MaxPlayerCount: maxPlayerCount,
 		GameType:       gameType,
+		OnlineAuth:     true,
 	}, nil
 }
 

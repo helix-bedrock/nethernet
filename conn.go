@@ -73,6 +73,8 @@ type Conn struct {
 	hooks    connHooks
 	listener *Listener
 
+	// portMappings gives server-reflexive candidates to trickle next to local ones.
+	portMappings []PortMapping
 	// channels contains *dataChannel used for sending messages in multiple MessageReliability.
 	//
 	// There is currently two data channels labeled 'ReliableDataChannel' and 'UnreliableDataChannel'
@@ -227,7 +229,8 @@ func (conn *Conn) send(data []byte, reliability MessageReliability) (n int, err 
 		// Each segment is prefixed with a uint8 remaining-segment counter that starts
 		// at totalSegments-1 and decrements to 0 for the final segment. Vanilla
 		// limits the total number of segments to math.MaxUint8 (255).
-		totalSegments := 0
+		// An empty packet is one message with only its header, as BDS sends it.
+		totalSegments := 1
 		if len(data) != 0 {
 			totalSegments = (len(data)-1)/segmentSize + 1
 		}
@@ -236,7 +239,7 @@ func (conn *Conn) send(data []byte, reliability MessageReliability) (n int, err 
 		}
 
 		remaining := totalSegments - 1
-		for i := 0; i < len(data); i += segmentSize {
+		for i := 0; i == 0 || i < len(data); i += segmentSize {
 			frag := data[i:min(len(data), i+segmentSize)]
 			segment, keep := conn.runMessage(false, reliability, append([]byte{uint8(remaining)}, frag...))
 			if !keep {
@@ -404,6 +407,9 @@ func isTerminalICEState(state webrtc.ICETransportState) bool {
 func (conn *Conn) handleTransports() {
 	conn.ice.OnConnectionStateChange(func(state webrtc.ICETransportState) {
 		conn.runState("ice", state.String())
+		if state == webrtc.ICETransportStateFailed && conn.listener != nil {
+			go conn.signalICEFailed()
+		}
 		if isTerminalICEState(state) {
 			// This handler function itself is invoked while holding an internal lock, so call close in a goroutine to avoid deadlock.
 			go func(err error) { _ = conn.close(err) }(fmt.Errorf("nethernet: ICE transport entered unrecoverable state: %s", state))
@@ -429,6 +435,20 @@ func (conn *Conn) handleTransports() {
 		// This handler function itself is invoked while holding an internal lock, so call close in a goroutine to avoid deadlock.
 		go func(err error) { _ = conn.close(err) }(e)
 	})
+}
+
+// signalICEFailed tells the remote connection that ICE failed, with BDS's code.
+func (conn *Conn) signalICEFailed() {
+	ctx, cancel := context.WithTimeout(conn.listener.Context(), SignalErrorTimeout)
+	defer cancel()
+	if err := sendSignal(ctx, conn.listener, conn.listener.signaling, &Signal{
+		Type:         SignalTypeError,
+		ConnectionID: conn.id,
+		Data:         strconv.Itoa(ErrorCodeICE),
+		NetworkID:    conn.networkID,
+	}); err != nil {
+		conn.log.Error("error signaling error", slog.Any("error", err))
+	}
 }
 
 // handleSignal handles an incoming Signal signaled from the remote connection.
@@ -522,6 +542,9 @@ func (conn *Conn) addRemoteCandidate(candidate webrtc.ICECandidate) error {
 // matching the 'a=max-message-size' value in the SDP sent by vanilla peer connections.
 const maxMessageSize = 262143
 
+// defaultSCTPMessageSize is the message size of a peer that gives none.
+const defaultSCTPMessageSize = 65536
+
 // parseDescription parses a [sdp.SessionDescription] signaled from a remote connection.
 // It transforms the fields of the [sdp.SessionDescription] into a description, which can be
 // used to start ICE, DTLS, and SCTP transports for a Conn.
@@ -586,16 +609,15 @@ func parseDescription(d *sdp.SessionDescription) (*description, error) {
 		return nil, fmt.Errorf("invalid setup attribute: %s", attr)
 	}
 
-	attr, ok = m.Attribute("max-message-size")
-	if !ok {
-		return nil, errors.New("missing max-message-size attribute")
-	}
-	maxMessageSize, err := strconv.ParseUint(attr, 10, 32)
-	if err != nil {
-		return nil, fmt.Errorf("parse max-message-size attribute as uint32: %w", err)
-	}
-	if maxMessageSize <= 1 {
-		return nil, fmt.Errorf("max-message-size attribute must exceed one byte: %d", maxMessageSize)
+	// Without the attribute the size is SCTP's default (RFC 8841). Too small a one is refused
+	// once ICE has connected, as BDS does it.
+	maxMessageSize := uint64(defaultSCTPMessageSize)
+	if attr, ok := m.Attribute("max-message-size"); ok {
+		var err error
+		maxMessageSize, err = strconv.ParseUint(attr, 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("parse max-message-size attribute as uint32: %w", err)
+		}
 	}
 
 	var candidates []webrtc.ICECandidate
@@ -680,6 +702,9 @@ func (conn *Conn) trickleCandidates(signaling Signaling) error {
 		// Signal the local candidate in a goroutine so candidate gathering is never blocked by signaling.
 		// It uses [Conn.Context] as the parent context so signaling stops once the connection is closed.
 		go conn.trickleCandidate(signaling, formatICECandidate(int(candidateIndex.Add(1)-1), *candidate, conn.description.ice, true))
+		for _, mapped := range mappedCandidate(conn.portMappings, *candidate, nil) {
+			go conn.trickleCandidate(signaling, formatICECandidate(int(candidateIndex.Add(1)-1), mapped, conn.description.ice, true))
+		}
 	})
 	return conn.gatherer.Gather()
 }

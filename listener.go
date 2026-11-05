@@ -37,6 +37,11 @@ type ListenConfig struct {
 	// as it requires additional steps on the Conn (which cannot be determined by the Conn).
 	API *webrtc.API
 
+	// PortMappings gives the addresses seen from outside for local UDP ports. Each one a local
+	// candidate falls under is offered too, as a server-reflexive candidate, as BDS's
+	// server-udp-ports does.
+	PortMappings []PortMapping
+
 	// ConnContext provides a [context.Context] for starting the ICE, DTLS, and SCTP transports of the Conn. If nil,
 	// there is no limit, as in BDS: the server waits until ICE fails or closes, which is what ends a connection whose
 	// client has gone. The parent [context.Context] may be used to create a [context.Context] to be returned (likely
@@ -45,8 +50,8 @@ type ListenConfig struct {
 	// It may be called concurrently for different connections.
 	ConnContext func(parent context.Context, conn *Conn) (context.Context, context.CancelFunc)
 
-	// NegotiationContext provides a [context.Context] for the negotiation. If nil, a default [context.Context]
-	// with 5 seconds timeout will be used. The parent [context.Context] may be used to create a [context.Context]
+	// NegotiationContext provides a [context.Context] for the negotiation. If nil, there is no limit, as in BDS.
+	// The parent [context.Context] may be used to create a [context.Context]
 	// to be returned (likely using [context.WithCancel] or [context.WithTimeout]). If the deadline of the context
 	// is exceeded, a Signal of SignalTypeError with ErrorCodeNegotiationTimeoutWaitingForAccept will be signaled back.
 	//
@@ -192,7 +197,6 @@ func (conf ListenConfig) Listen(signaling Signaling) (*Listener, error) {
 
 		incoming:     make(chan *Conn),
 		negotiations: make(map[negotiationKey]*listenerNegotiator),
-		sem:          make(chan struct{}, maxListenerNegotiations),
 
 		closed: make(chan struct{}),
 	}
@@ -223,7 +227,8 @@ type Listener struct {
 	negotiations map[negotiationKey]*listenerNegotiator
 	// negotiationsMu guards negotiations from concurrent read/write access.
 	negotiationsMu sync.RWMutex
-	sem            chan struct{}
+	// pending counts offers still being handled.
+	pending atomic.Int32
 
 	// stop is a function called to stop notifying signals from [Signaling].
 	stop func()
@@ -267,8 +272,6 @@ type listenerNegotiator struct {
 }
 
 const (
-	// maxListenerNegotiations bounds offer goroutines through acceptance or failure delivery.
-	maxListenerNegotiations = 64
 	// maxPendingSignalsPerNegotiation bounds signals received before Conn publication.
 	maxPendingSignalsPerNegotiation = 32
 )
@@ -360,7 +363,7 @@ func (n *listenerNegotiator) finish() {
 	if closed {
 		n.unregister()
 	}
-	<-n.sem
+	n.pending.Add(-1)
 }
 
 // reportError sends a bounded error reply when err carries a signaling code.
@@ -441,16 +444,16 @@ func (n *listenerNegotiator) handleOffer(signal *Signal) error {
 		var cancel context.CancelFunc
 		ctx, cancel = n.conf.NegotiationContext(parent)
 		if ctx == nil {
-			// A broken NegotiationContext falls back to the default timeout
-			// instead of panicking.
-			ctx, cancel = context.WithTimeout(parent, time.Second*15)
+			// A broken NegotiationContext falls back to the default instead of
+			// panicking.
+			ctx, cancel = context.WithCancel(parent)
 		}
 		if cancel != nil {
 			defer cancel()
 		}
 	} else {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(parent, time.Second*15)
+		ctx, cancel = context.WithCancel(parent)
 		defer cancel()
 	}
 	credentials, err := n.signaling.Credentials(ctx)
@@ -487,6 +490,7 @@ func (n *listenerNegotiator) handleOffer(signal *Signal) error {
 			// We may have run out of UDP ports configured in the WebRTC API.
 			return wrapSignalError(errors.New("no local candidates were gathered"), ErrorCodeICE)
 		}
+		c.description.candidates = append(c.description.candidates, mappedCandidates(n.conf.PortMappings, c.description.candidates)...)
 	}
 	for _, candidate := range desc.candidates {
 		// Non-trickle ICE connection may include candidates in a single SDP.
@@ -569,6 +573,7 @@ func (n *listenerNegotiator) handleOffer(signal *Signal) error {
 	}
 
 	if !disableTrickleICE {
+		c.portMappings = n.conf.PortMappings
 		if err := c.trickleCandidates(n.signaling); err != nil {
 			return wrapSignalError(fmt.Errorf("start gathering local candidates: %w", err), ErrorCodeFailedToCreatePeerConnection)
 		}
@@ -707,6 +712,10 @@ func (n *listenerNegotiator) startTransports(ctx context.Context, conn *Conn, d 
 	iceRole := webrtc.ICERoleControlled
 	if err := conn.ice.StartContext(ctx, nil, d.ice, &iceRole); err != nil {
 		return fmt.Errorf("start ICE: %w", err)
+	}
+	// BDS reads the message size once ICE connects, and closes with this code.
+	if d.sctp.MaxMessageSize <= 1 {
+		return wrapSignalError(fmt.Errorf("max message size %d is too small", d.sctp.MaxMessageSize), ErrorCodeInvalidArgument)
 	}
 
 	conn.log.Debug("starting DTLS transport", slog.String("remoteRole", d.dtls.Role.String()))
@@ -871,14 +880,7 @@ func (l *Listener) NotifySignal(signal *Signal) bool {
 					return false
 				}
 			}
-			select {
-			case l.sem <- struct{}{}:
-				break
-			default:
-				l.conf.Log.Error("error allocating negotiation", "max", len(l.sem))
-				l.negotiationsMu.Unlock()
-				return false
-			}
+			l.pending.Add(1)
 			n = &listenerNegotiator{
 				key:      key,
 				Listener: l,

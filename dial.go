@@ -374,6 +374,10 @@ func (d Dialer) startTransports(ctx context.Context, conn *Conn, desc *descripti
 		return fmt.Errorf("start ICE: %w", err)
 	}
 
+	if desc.sctp.MaxMessageSize <= 1 {
+		return wrapSignalError(fmt.Errorf("max message size %d is too small", desc.sctp.MaxMessageSize), ErrorCodeInvalidArgument)
+	}
+
 	conn.log.Debug("starting DTLS transport", slog.String("remoteRole", desc.dtls.Role.String()))
 	if err := conn.dtls.StartContext(ctx, desc.dtls); err != nil {
 		return fmt.Errorf("start DTLS: %w", err)

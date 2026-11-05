@@ -18,6 +18,9 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
+// testNegotiations is how many negotiations tests hold at once.
+const testNegotiations = 64
+
 func TestListenerTimeoutReplyUsesConnContext(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -405,57 +408,11 @@ func (s cancelOnNotifySignaling) Notify(n Notifier) func() {
 	return stop
 }
 
-func TestListenerBoundsPendingNegotiations(t *testing.T) {
-	signaling := newBlockingCredentialsSignaling()
-	signaling.started = make(chan struct{}, maxListenerNegotiations)
-	t.Cleanup(signaling.close)
-	cancels := make(chan context.CancelFunc, maxListenerNegotiations)
-	l, err := (ListenConfig{
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		NegotiationContext: func(parent context.Context) (context.Context, context.CancelFunc) {
-			ctx, cancel := context.WithCancel(parent)
-			cancels <- cancel
-			return ctx, cancel
-		},
-	}).Listen(signaling)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = l.Close() })
-	offer := testOffer(t)
-	for i := range maxListenerNegotiations {
-		if !l.NotifySignal(&Signal{Type: SignalTypeOffer, NetworkID: "remote", ConnectionID: uint64(i), Data: offer}) {
-			t.Fatalf("offer %d was rejected before the limit", i)
-		}
-	}
-	for range maxListenerNegotiations {
-		waitForCredentialRequest(t, signaling.started, "pending offer")
-	}
-	next := &Signal{Type: SignalTypeOffer, NetworkID: "remote", ConnectionID: maxListenerNegotiations, Data: offer}
-	if l.NotifySignal(next) {
-		t.Fatal("offer above the pending negotiation limit was admitted")
-	}
-	// Pending connections can still receive signals when admission is full.
-	if !l.NotifySignal(&Signal{Type: SignalTypeCandidate, NetworkID: "remote", ConnectionID: 0, Data: "candidate"}) {
-		t.Fatal("pending negotiation could not receive a candidate at capacity")
-	}
-	(<-cancels)()
-	waitListenerState(t, l, maxListenerNegotiations-1, maxListenerNegotiations-1)
-	if !l.NotifySignal(next) {
-		t.Fatal("failed negotiation did not release its admission slot")
-	}
-	_ = l.Close()
-	waitListenerState(t, l, 0, 0)
-	if l.NotifySignal(next) {
-		t.Fatal("closed listener admitted an offer")
-	}
-}
-
 func TestListenerRemoteCancellationReleasesPendingOffers(t *testing.T) {
 	base := newBlockingCredentialsSignaling()
-	base.started = make(chan struct{}, maxListenerNegotiations)
+	base.started = make(chan struct{}, testNegotiations)
 	t.Cleanup(base.close)
-	responses := make(chan Signal, maxListenerNegotiations)
+	responses := make(chan Signal, testNegotiations)
 	l, err := (ListenConfig{
 		Log:                slog.New(slog.NewTextHandler(io.Discard, nil)),
 		NegotiationContext: context.WithCancel,
@@ -465,12 +422,12 @@ func TestListenerRemoteCancellationReleasesPendingOffers(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = l.Close() })
 	offer := testOffer(t)
-	for i := range maxListenerNegotiations {
+	for i := range testNegotiations {
 		if !l.NotifySignal(&Signal{Type: SignalTypeOffer, NetworkID: "remote", ConnectionID: uint64(i), Data: offer}) {
 			t.Fatalf("offer %d rejected before reaching capacity", i)
 		}
 	}
-	for range maxListenerNegotiations {
+	for range testNegotiations {
 		waitForCredentialRequest(t, base.started, "pending offer")
 	}
 	// A malformed error must neither cancel the offer nor consume deferred capacity.
@@ -479,14 +436,14 @@ func TestListenerRemoteCancellationReleasesPendingOffers(t *testing.T) {
 			t.Fatalf("malformed error %q was accepted", data)
 		}
 	}
-	waitListenerState(t, l, maxListenerNegotiations, maxListenerNegotiations)
+	waitListenerState(t, l, testNegotiations, testNegotiations)
 	// Cancellation must work even when the candidate queue is already full.
 	for range maxPendingSignalsPerNegotiation {
 		if !l.NotifySignal(&Signal{Type: SignalTypeCandidate, NetworkID: "remote", ConnectionID: 0, Data: "candidate"}) {
 			t.Fatal("candidate rejected before deferred capacity")
 		}
 	}
-	for i := range maxListenerNegotiations {
+	for i := range testNegotiations {
 		if !l.NotifySignal(&Signal{Type: SignalTypeError, NetworkID: "remote", ConnectionID: uint64(i), Data: strconv.Itoa(ErrorCodeGenericFailure)}) {
 			t.Fatalf("cancellation for offer %d rejected", i)
 		}
@@ -614,50 +571,6 @@ func TestListenerReservesFailedKeyUntilReplyCompletes(t *testing.T) {
 	}
 }
 
-func TestListenerBoundsErrorReplies(t *testing.T) {
-	base := newBlockingCredentialsSignaling()
-	t.Cleanup(base.close)
-	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
-	signaling := blockedErrorSignaling{Signaling: base, started: make(chan context.Context, maxListenerNegotiations), release: release}
-	l, err := (ListenConfig{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}).Listen(signaling)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = l.Close() })
-	// Stalled failures consume only their own slots while other offers can progress.
-	stallListenerErrorReplies(t, l, signaling.started, maxListenerNegotiations-1)
-	waitListenerState(t, l, maxListenerNegotiations-1, maxListenerNegotiations-1)
-	if !l.NotifySignal(&Signal{Type: SignalTypeOffer, NetworkID: "remote", ConnectionID: 1, Data: testOffer(t)}) {
-		t.Fatal("stalled error replies prevented an offer within capacity")
-	}
-	waitForCredentialRequest(t, base.started, "offer while error replies stall")
-	// Cancellation frees the active offer slot, even while failure delivery is stalled.
-	if !l.NotifySignal(&Signal{Type: SignalTypeError, NetworkID: "remote", ConnectionID: 1, Data: strconv.Itoa(ErrorCodeGenericFailure)}) {
-		t.Fatal("remote cancellation rejected")
-	}
-	waitListenerState(t, l, maxListenerNegotiations-1, maxListenerNegotiations-1)
-	if !l.NotifySignal(&Signal{Type: SignalTypeOffer, NetworkID: "invalid", ConnectionID: maxListenerNegotiations, Data: "invalid"}) {
-		t.Fatal("last available slot was not admitted")
-	}
-	waitListenerErrorReply(t, signaling.started)
-	waitListenerState(t, l, maxListenerNegotiations, maxListenerNegotiations)
-	if l.NotifySignal(&Signal{Type: SignalTypeOffer, NetworkID: "overflow", ConnectionID: 1, Data: "invalid"}) {
-		t.Fatal("stalled failure replies did not bound admission")
-	}
-	// Releasing delivery frees capacity, and every admitted failure was attempted.
-	for range maxListenerNegotiations {
-		release <- struct{}{}
-	}
-	waitListenerState(t, l, 0, 0)
-	if !l.NotifySignal(&Signal{Type: SignalTypeOffer, NetworkID: "remote", ConnectionID: 1, Data: testOffer(t)}) {
-		t.Fatal("finished error replies did not release admission")
-	}
-	waitForCredentialRequest(t, base.started, "offer after error delivery")
-}
-
-// blockedErrorSignaling holds error responses until their delivery context ends,
-// or until an explicit release when testing a backend that stalls past cancellation.
 type blockedErrorSignaling struct {
 	Signaling
 	started chan context.Context
@@ -713,7 +626,7 @@ func waitListenerState(t *testing.T, l *Listener, pending, owners int) {
 	defer tick.Stop()
 	for {
 		l.negotiationsMu.Lock()
-		gotPending, gotOwners := len(l.sem), len(l.negotiations)
+		gotPending, gotOwners := int(l.pending.Load()), len(l.negotiations)
 		l.negotiationsMu.Unlock()
 		if gotPending == pending && gotOwners == owners {
 			return

@@ -103,7 +103,13 @@ func (conf HandlerConfig) Serve(address string) (*Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return conf.serve(NewListener(l, conf.Logger))
+	h := conf.New()
+	var cancel context.CancelCauseFunc
+	h.ctx, cancel = context.WithCancelCause(context.Background())
+	go func() { cancel(h.ServeListener(l)) }()
+	h.closeFunc = l.Close
+	h.addr = l.Addr()
+	return h, nil
 }
 
 // serve starts an HTTP server using the provided listener and returns the Handler attached to it.
@@ -113,7 +119,7 @@ func (conf HandlerConfig) serve(l net.Listener) (*Handler, error) {
 	h.ctx, cancel = context.WithCancelCause(context.Background())
 	server := &http.Server{
 		Handler:     h,
-		ReadTimeout: RequestTimeout,
+		ReadTimeout: requestTimeout,
 	}
 	// Call [http.Server.Serve] in a goroutine since it is a blocking method.
 	go func() {
@@ -189,9 +195,12 @@ type Handler struct {
 	notifierID uint64
 	notifierMu sync.RWMutex
 
-	// status atomically stores the current server status assigned to the Handler.
-	status   []byte
-	statusMu sync.RWMutex
+	// current is the server status assigned to the Handler, and nonce and nonceAt its nonce
+	// and when that was made. statusMu guards them.
+	current  *Status
+	nonce    string
+	nonceAt  time.Time
+	statusMu sync.Mutex
 
 	// disableNotifyTypeCheck permits tests to register lightweight Notifier stubs.
 	disableNotifyTypeCheck bool
@@ -316,14 +325,33 @@ func (h *Handler) PongData(data []byte) {
 // overwrites the status set here. Callers can set [HandlerConfig.DisablePongData]
 // to true to disable this behavior.
 func (h *Handler) Status(status Status) {
-	b, err := json.Marshal(status)
-	if err != nil {
-		h.conf.Logger.Error("error encoding status", "error", err)
-		return
+	status.DataVersion = statusDataVersion
+	if status.Connection == 0 {
+		status.Connection = statusConnectionNetherNet
 	}
 	h.statusMu.Lock()
-	h.status = b
+	status.Nonce = h.nonce
+	h.current = &status
 	h.statusMu.Unlock()
+}
+
+// statusBody is the status as JSON, with a nonce no older than BDS keeps one. Nil with no status.
+func (h *Handler) statusBody() []byte {
+	h.statusMu.Lock()
+	defer h.statusMu.Unlock()
+	if h.current == nil {
+		return nil
+	}
+	if now := time.Now(); h.nonce == "" || now.Sub(h.nonceAt) > nonceLifetime {
+		h.nonce, h.nonceAt = strconv.FormatUint(rnd.Uint64(), 16), now
+	}
+	h.current.Nonce = h.nonce
+	b, err := json.Marshal(h.current)
+	if err != nil {
+		h.conf.Logger.Error("error encoding status", "error", err)
+		return nil
+	}
+	return b
 }
 
 // handlePing handles a GET request to the /v1/join endpoint. It responds with
@@ -331,10 +359,7 @@ func (h *Handler) Status(status Status) {
 // [Handler.Status] or by the upstream game listener via [Handler.PongData].
 // Otherwise, the body is empty.
 func (h *Handler) handlePing(w http.ResponseWriter) {
-	h.statusMu.RLock()
-	status := h.status
-	h.statusMu.RUnlock()
-
+	status := h.statusBody()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(status)
@@ -376,10 +401,6 @@ func (h *Handler) handleOffer(w http.ResponseWriter, req *http.Request, networkI
 	signal, err := h.negotiate(ctx, networkID, string(b))
 	if err != nil {
 		log.Error("error negotiating", slog.Any("error", err))
-		if errors.Is(err, errOfferNotAdmitted) {
-			writeText(w, http.StatusServiceUnavailable, "Service unavailable")
-			return
-		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			writeText(w, http.StatusGatewayTimeout, "Gateway Timeout")
 			return
@@ -450,7 +471,7 @@ func (h *Handler) negotiate(ctx context.Context, networkID, offer string) (*neth
 	}()
 
 	if !notifier.NotifySignal(signal) {
-		return nil, errOfferNotAdmitted
+		return nil, errors.New("nethernet/endpoint: offer not admitted")
 	}
 
 	// On a timeout BDS only forgets the request: the session goes on until ICE ends it.
@@ -462,16 +483,17 @@ func (h *Handler) negotiate(ctx context.Context, networkID, offer string) (*neth
 	}
 }
 
-// errOfferNotAdmitted reports that the listener rejected or dropped an offer
-// before it could be processed.
-var errOfferNotAdmitted = errors.New("nethernet/endpoint: offer not admitted")
-
-// ServeHTTP implements [http.Handler] with BDS's routes: GET /v1/join with any
-// query, and POST /v1/join/ followed by the rest of the target. Anything else is
-// a 404. Every reply closes the connection and has no date.
+// ServeHTTP implements [http.Handler], for serving behind another HTTP server.
+// [Handler.ServeListener] is the way BDS serves.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Connection", "close")
 	w.Header()["Date"] = nil
+	h.route(w, req)
+}
+
+// route answers with BDS's routes: GET /v1/join with any query, and POST
+// /v1/join/ followed by the rest of the target. Anything else is a 404.
+func (h *Handler) route(w http.ResponseWriter, req *http.Request) {
 	switch {
 	case req.Method == http.MethodGet && req.URL.Path == joinPath:
 		h.handlePing(w)
