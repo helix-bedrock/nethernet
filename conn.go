@@ -401,11 +401,49 @@ func (conn *Conn) snapshotChannels() [messageReliabilityCapacity]*dataChannel {
 	return conn.channels
 }
 
-// Close closes the 'ReliableDataChannel' and 'UnreliableDataChannel', then closes the SCTP, DTLS,
-// and ICE transports of the Conn. An error may be returned using [errors.Join], which contains
-// non-nil errors encountered during closure.
+// closeDrainTimeout is the longest Close waits for what was sent to be acknowledged.
+const closeDrainTimeout = 2 * time.Second
+
+// closeDrainPoll is how often Close checks whether everything sent was acknowledged.
+const closeDrainPoll = 10 * time.Millisecond
+
+// Close waits, up to closeDrainTimeout, until everything written was acknowledged by the other
+// end, then closes the 'ReliableDataChannel' and 'UnreliableDataChannel' and the SCTP, DTLS and
+// ICE transports of the Conn. Without the wait a last packet, such as a disconnect, is thrown
+// away with the transports and the client never sees it. An error may be returned using
+// [errors.Join], which contains non-nil errors encountered during closure.
 func (conn *Conn) Close() (err error) {
+	conn.drain(closeDrainTimeout)
 	return conn.close(net.ErrClosed)
+}
+
+// drain waits until no data channel has data waiting to be acknowledged (pion releases a
+// channel's buffered amount when the other end acknowledges it), the connection closes, or
+// timeout passes.
+func (conn *Conn) drain(timeout time.Duration) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(closeDrainPoll)
+	defer tick.Stop()
+	for {
+		waiting := false
+		for _, ch := range conn.snapshotChannels() {
+			if ch != nil && ch.BufferedAmount() > 0 {
+				waiting = true
+				break
+			}
+		}
+		if !waiting {
+			return
+		}
+		select {
+		case <-conn.ctx.Done():
+			return
+		case <-deadline.C:
+			return
+		case <-tick.C:
+		}
+	}
 }
 
 // isTerminalICEState reports whether an ICE transport can no longer recover.
