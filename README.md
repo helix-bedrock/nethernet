@@ -1,5 +1,7 @@
 # nethernet
 
+[![Discord](https://img.shields.io/discord/1568071670097518763?label=discord&logo=discord&logoColor=white&color=5865F2)](https://discord.gg/Fbmc69Gqr7)
+
 NetherNet for Minecraft: Bedrock Edition: the WebRTC-based transport newer Bedrock
 clients use for friends lists, LAN games and Xbox Live joins, with full low-level
 access for servers.
