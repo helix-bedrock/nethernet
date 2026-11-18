@@ -30,7 +30,7 @@ go test -race ./...
 ## Invariants: do not break these
 
 1. Behaviour matches vanilla Bedrock NetherNet for real clients. The limits in `limits.go`, the per-address cap in `endpoint/server.go` and the local-only LAN check in `discovery/local.go` are stricter than BDS on purpose: they only stop floods and oversized input.
-2. The original copyright line in `LICENSE` stays.
+2. The original MIT license of the first import stays in `licenses/`, and `CREDITS.md` keeps listing it.
 3. Never panic (see the org rules).
 
 ## Gotchas

@@ -6,7 +6,7 @@ access for servers.
 
 **Status as of 2026-11-09:** in development. The API will change as low-level hooks are added. `Conn.Close` waits up to 2 seconds for everything sent to be acknowledged, so a last disconnect reaches the client. Server identity keys load, save and generate the way BDS 1.26.60 does (`keys/server_identity_key.pem`).
 
-Part of [Helix](https://github.com/helix-bedrock), an open-source Minecraft: Bedrock
+Part of [Helix](https://github.com/helix-bedrock), a source-available Minecraft: Bedrock
 Edition server engine in Go. Helix maintains this library.
 
 ## Origin
@@ -72,5 +72,12 @@ See the [contributing guide](https://github.com/helix-bedrock/.github/blob/main/
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE). The original copyright notice from go-nethernet is kept,
-as the MIT license requires. Sources are listed in [`CREDITS.md`](CREDITS.md).
+Noncommercial use only: [PolyForm Noncommercial 1.0.0](LICENSE) with Helix's
+[extra permissions](ADDITIONAL-PERMISSIONS.md). Anyone may use it, run servers with it
+(even ones that make money) and sell their own plugins, but nobody may sell Helix or its
+code. Helix's game behaviour is re-engineered from Minecraft's Bedrock Dedicated Server;
+see [NOTICE.md](NOTICE.md). Not an official Minecraft product. Not approved by or
+associated with Mojang or Microsoft.
+
+The initial import from go-nethernet keeps its MIT license; see [CREDITS.md](CREDITS.md)
+and [`licenses/`](licenses).
